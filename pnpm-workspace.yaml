@@ -1,6 +1,16 @@
+# pnpm workspace settings for plureslm-openclaw (single-package repo).
+#
+# verifyDepsBeforeRun=false: skip the implicit `pnpm install` status check that
+# pnpm runs before `pnpm run <script>`. That check exits non-zero solely because
+# of the ignored-build-scripts notice below, which would otherwise mask an
+# otherwise-clean `tsc` build/check (our scripts call tsc directly).
+verifyDepsBeforeRun: false
+
+# allowBuilds: only esbuild may run its postinstall (vitest needs its platform
+# binary). Everything else stays sandboxed; we never execute their postinstalls.
 allowBuilds:
-  '@google/genai': set this to true or false
-  esbuild: set this to true or false
-  openclaw: set this to true or false
-  protobufjs: set this to true or false
-  tree-sitter-bash: set this to true or false
+  esbuild: true
+  '@google/genai': false
+  openclaw: false
+  protobufjs: false
+  tree-sitter-bash: false

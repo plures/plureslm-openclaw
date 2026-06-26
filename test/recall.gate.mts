@@ -29,13 +29,10 @@ import { buildMemoryCapability } from "../dist/api.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CHILD = join(here, "store-child.mts");
-const TSX = join(
-  here,
-  "..",
-  "node_modules",
-  ".bin",
-  process.platform === "win32" ? "tsx.cmd" : "tsx",
-);
+// Spawn the child as `node <tsx-cli> <child>`. On Windows, spawnSync on the
+// `tsx.cmd` shim does not reliably capture stdio / launch; invoking the tsx
+// CLI .mjs through the current node binary is robust and cross-platform.
+const TSX_CLI = join(here, "..", "node_modules", "tsx", "dist", "cli.mjs");
 const COPY_FIXTURE =
   "C:/Users/kbristol/.openclaw/workspace/.tmp/plureslm-store-copy-20260626";
 
@@ -47,7 +44,10 @@ function check(label: string, cond: boolean, detail?: unknown): void {
 }
 
 function runChild(dir: string, phase: "seed" | "read") {
-  const res = spawnSync(TSX, [CHILD, dir, phase], { encoding: "utf8", timeout: 120_000 });
+  const res = spawnSync(process.execPath, [TSX_CLI, CHILD, dir, phase], {
+    encoding: "utf8",
+    timeout: 120_000,
+  });
   const stdout = (res.stdout ?? "").trim();
   const lastLine = stdout.split(/\r?\n/).filter(Boolean).pop() ?? "";
   let parsed: Record<string, unknown> | null = null;
