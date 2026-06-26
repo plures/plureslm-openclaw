@@ -1,0 +1,54 @@
+{
+  "name": "@plures/plureslm-openclaw",
+  "version": "0.1.0",
+  "description": "PluresLM memory capability for OpenClaw — read-path recall backed by @plures/pluresdb-native (Stage A skeleton).",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "author": "Plures",
+  "homepage": "https://github.com/plures/plureslm-openclaw",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/plures/plureslm-openclaw.git"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.6.8",
+      "minGatewayVersion": "2026.6.8"
+    },
+    "build": {
+      "openclawVersion": "2026.6.8",
+      "pluginSdkVersion": "2026.6.8"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx test/recall.gate.mts",
+    "test:vitest": "vitest run",
+    "gate": "tsc -p tsconfig.json && tsx test/recall.gate.mts"
+  },
+  "dependencies": {
+    "@plures/pluresdb-native": "file:../pluresdb/crates/pluresdb-node"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "openclaw": "2026.6.8",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

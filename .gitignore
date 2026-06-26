@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Native addons accidentally copied into the tree (the real one is linked from
+# ../pluresdb/crates/pluresdb-node via package.json file: dependency).
+*.node
+
+# Test scratch / temp stores
+.tmp/
+*.tmp
+
+# fastembed / HF model cache created at runtime when embeddings are exercised
+# (the bge-small ONNX model is large and regenerable — never commit it).
+.fastembed_cache/
+.cache/
+**/models--*/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.log

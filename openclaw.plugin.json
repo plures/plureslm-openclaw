@@ -1,0 +1,39 @@
+{
+  "id": "plureslm",
+  "name": "PluresLM Memory",
+  "description": "Read-path memory recall for OpenClaw backed by @plures/pluresdb-native. Stage A: recall/search/status only — no write path, no flush, no slot mutation beyond the exclusive memory capability.",
+  "contracts": {
+    "memoryCapability": true
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "dbPath": {
+        "type": "string",
+        "description": "Absolute path to the PluresDB store directory (the folder containing conf/db/blobs/snap.*). When omitted, the memory capability stays inert and reports unavailable."
+      },
+      "embeddingModel": {
+        "type": "string",
+        "description": "HuggingFace embedding model id used for vector recall.",
+        "default": "BAAI/bge-small-en-v1.5"
+      },
+      "vectorThreshold": {
+        "type": "number",
+        "description": "Cosine-similarity floor (0-1) for vector recall hits.",
+        "minimum": 0,
+        "maximum": 1,
+        "default": 0.3
+      },
+      "maxResults": {
+        "type": "integer",
+        "description": "Default maximum number of recall hits to return.",
+        "minimum": 1,
+        "default": 8
+      }
+    }
+  }
+}
