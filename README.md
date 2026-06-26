@@ -2,7 +2,7 @@
 
 **PluresLM memory capability for [OpenClaw](https://github.com/openclaw/openclaw).**
 
-A read-path memory plugin that recalls from a [PluresDB](https://github.com/kayodebristol) store via the native `@plures/pluresdb-native` addon. It registers OpenClaw's exclusive **memory capability** and serves `search` / `readFile` / `status` from PluresDB's vector and text search.
+A read-path memory plugin that recalls from a [PluresDB](https://github.com/plures/pluresdb) store via the native `@plures/pluresdb-native` addon. It registers OpenClaw's exclusive **memory capability** and serves `search` / `readFile` / `status` from PluresDB's vector and text search.
 
 > **Stage A scope.** This is the compiling skeleton: **read path only**. There is no write path, no flush plan, no prompt-section takeover, and no daemon. It opens an existing PluresDB store and answers recall queries. Ingestion/write lands in a later stage.
 
