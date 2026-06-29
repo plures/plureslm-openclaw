@@ -22,6 +22,18 @@
  *    the sentinel comes back from recall() with a sane score and totalNodes > 0.
  *    This proves the real write path (sync -> store -> put -> buildVectorIndex),
  *    not just the test seeder, makes content recallable across the lock boundary.
+ *  GATE D (associative graph recall): through the SHIPPED capability (sync()
+ *    link-on-write + search() graph expansion), assert BOTH (a) the ASSOCIATIVE
+ *    WIN — a node whose content is disjoint from the query (below a strict
+ *    threshold, so it is NOT a direct vector/text hit) is still surfaced via
+ *    graph expansion (citation contains "graph", via:"graph"), durable across a
+ *    fresh process — and (b) the PRECISION GUARDRAIL — with the DEFAULT
+ *    threshold the on-topic direct hit ranks FIRST and every graph hit ranks
+ *    strictly BELOW the direct hit that seeded it (graph hits are appended after
+ *    direct hits and never displace top-1). Uses the cross-process child
+ *    (test/assoc-child.mts) so the write/link phase and the fresh-process read
+ *    phases honor the exclusive-lock contract. Real shipped path only — no
+ *    fixtures faking recall (C-TEST-002).
  */
 
 import { spawnSync } from "node:child_process";
@@ -34,6 +46,7 @@ import { buildMemoryCapability } from "../dist/api.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CHILD = join(here, "store-child.mts");
+const ASSOC_CHILD = join(here, "assoc-child.mts");
 // Spawn the child as `node <tsx-cli> <child>`. On Windows, spawnSync on the
 // `tsx.cmd` shim does not reliably capture stdio / launch; invoking the tsx
 // CLI .mjs through the current node binary is robust and cross-platform.
@@ -65,6 +78,31 @@ function runChild(dir: string, phase: "seed" | "write" | "read", query?: string)
   }
   return { status: res.status, stdout, stderr: (res.stderr ?? "").trim(), parsed };
 }
+
+function runAssocChild(dir: string, phase: "link" | "read-strict" | "read-default") {
+  const res = spawnSync(process.execPath, [TSX_CLI, ASSOC_CHILD, dir, phase], {
+    encoding: "utf8",
+    timeout: 120_000,
+  });
+  const stdout = (res.stdout ?? "").trim();
+  const lastLine = stdout.split(/\r?\n/).filter(Boolean).pop() ?? "";
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    parsed = JSON.parse(lastLine);
+  } catch {
+    parsed = null;
+  }
+  return { status: res.status, stdout, stderr: (res.stderr ?? "").trim(), parsed };
+}
+
+type RankedHit = {
+  rank: number;
+  path: string;
+  score: number;
+  citation: string | null;
+  via: "vector" | "text" | "graph";
+  seedId: string | null;
+};
 
 async function gateA(): Promise<void> {
   console.log("\n=== GATE A: open real COPY fixture via built plugin read path ===");
@@ -178,11 +216,97 @@ function gateC(): void {
   }
 }
 
+function gateD(): void {
+  console.log("\n=== GATE D: associative graph recall (sync() link-on-write + search() graph expansion) ===");
+  const dir = mkdtempSync(join(tmpdir(), "plureslm-gateD-"));
+  try {
+    // Phase 1 (own process): write 3 same-session files + ingest via the
+    // SHIPPED sync() path (forms category+temporal edges via link-on-write),
+    // then confirm the disjoint sibling is a real graph neighbor of the seed.
+    const link = runAssocChild(dir, "link");
+    console.log("  link child stdout:", link.stdout);
+    if (link.stderr) console.log("  link child stderr:", link.stderr);
+    check("link child exit 0", link.status === 0);
+    check("link ok", link.parsed?.ok === true, link.parsed?.error ?? null);
+    const seedId = String(link.parsed?.seedId ?? "");
+    const betaId = String(link.parsed?.siblingId ?? "");
+    // Edges really formed via the shipped path: the disjoint BETA is a neighbor
+    // of the on-topic ALPHA seed (this is the structural fact the win relies on).
+    check("link-on-write formed >= 1 edge (advisory count)", Number(link.parsed?.edgeCount) >= 1, link.parsed?.edgeCount);
+    check("disjoint sibling (beta) IS a graph neighbor of the seed (alpha)", link.parsed?.betaIsNeighbor === true, link.parsed?.alphaNeighborIds ?? null);
+
+    // Phase 2 (FRESH process, strict threshold): ASSOCIATIVE WIN. The disjoint
+    // BETA can only arrive via graph expansion of the ALPHA direct hit.
+    const strict = runAssocChild(dir, "read-strict");
+    console.log("  read-strict child stdout:", strict.stdout);
+    if (strict.stderr) console.log("  read-strict child stderr:", strict.stderr);
+    check("read-strict child exit 0", strict.status === 0);
+    check("read-strict ok", strict.parsed?.ok === true, strict.parsed?.error ?? null);
+    const sRanked = (strict.parsed?.ranked as RankedHit[]) ?? [];
+    check("strict recall NON-EMPTY", sRanked.length > 0, { count: sRanked.length });
+    // The on-topic ALPHA must be a DIRECT hit (vector/text), never graph.
+    const sAlpha = sRanked.find((h) => h.path === seedId);
+    check("strict: on-topic alpha present as a DIRECT hit", Boolean(sAlpha) && sAlpha!.via !== "graph", sAlpha ?? null);
+    // BETA is disjoint + below the 0.80 threshold => it can ONLY be a graph hit.
+    const sBeta = sRanked.find((h) => h.path === betaId);
+    check("ASSOCIATIVE WIN: disjoint beta surfaced under strict threshold", Boolean(sBeta), { betaId, ranked: sRanked.map((h) => h.path) });
+    check("ASSOCIATIVE WIN: beta arrived via:\"graph\"", sBeta?.via === "graph", sBeta ?? null);
+    check("ASSOCIATIVE WIN: beta citation contains \"graph\"", Boolean(sBeta?.citation?.includes("graph")), sBeta?.citation ?? null);
+    // Provenance honesty: the graph hit was seeded from the alpha direct hit.
+    check("ASSOCIATIVE WIN: beta seeded from the alpha direct hit", sBeta?.seedId === seedId, { seedId, betaSeed: sBeta?.seedId ?? null });
+    // Graph hits NEVER outrank the direct hit that seeded them (precision).
+    if (sBeta && sAlpha) {
+      check("strict: graph beta ranks strictly BELOW its seed alpha", sBeta.rank > sAlpha.rank, { alphaRank: sAlpha.rank, betaRank: sBeta.rank });
+    }
+
+    // Phase 3 (FRESH process, DEFAULT threshold): PRECISION GUARDRAIL. The
+    // on-topic GAMMA query must keep its direct top-1; graph hits only ever
+    // appear at lower rank than the direct hit that seeded them.
+    const def = runAssocChild(dir, "read-default");
+    console.log("  read-default child stdout:", def.stdout);
+    if (def.stderr) console.log("  read-default child stderr:", def.stderr);
+    check("read-default child exit 0", def.status === 0);
+    check("read-default ok", def.parsed?.ok === true, def.parsed?.error ?? null);
+    const dRanked = (def.parsed?.ranked as RankedHit[]) ?? [];
+    const gammaId = String((def.parsed?.ids as Record<string, string> | undefined)?.gamma ?? "");
+    check("default recall NON-EMPTY", dRanked.length > 0, { count: dRanked.length });
+    const dTop = dRanked[0];
+    // GUARDRAIL #1: the expected on-topic node is top-1 and is a DIRECT hit.
+    check("PRECISION GUARDRAIL: top-1 is the expected direct node (gamma)", dTop?.path === gammaId, { top: dTop?.path, expected: gammaId });
+    check("PRECISION GUARDRAIL: top-1 is a DIRECT hit (not graph)", dTop?.via !== "graph", dTop ?? null);
+    // GUARDRAIL #2: every graph hit ranks strictly below the direct hit that
+    // seeded it (graph expansion is append-only at the tail; it never displaces
+    // or reorders ahead of a direct hit). A failure here is a REAL precision
+    // regression, not something to paper over.
+    const rankOf = new Map(dRanked.map((h) => [h.path, h.rank] as const));
+    let guardrailHeld = true;
+    for (const h of dRanked) {
+      if (h.via !== "graph") continue;
+      const seedRank = h.seedId !== null ? rankOf.get(h.seedId) : undefined;
+      // The seed of every graph hit must be a direct hit present ABOVE it.
+      const ok = seedRank !== undefined && seedRank < h.rank;
+      if (!ok) guardrailHeld = false;
+      check(
+        `PRECISION GUARDRAIL: graph hit ${h.path} ranks below its seed ${h.seedId}`,
+        ok,
+        { graphRank: h.rank, seedId: h.seedId, seedRank: seedRank ?? null },
+      );
+    }
+    // Also assert no graph hit ever sits at rank 0 (top-1 is always direct).
+    const graphAtTop = dRanked.some((h) => h.via === "graph" && h.rank === 0);
+    check("PRECISION GUARDRAIL: no graph hit occupies top-1", !graphAtTop, { graphAtTop });
+    check("PRECISION GUARDRAIL: held for every graph hit", guardrailHeld, { ranked: dRanked });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 (async () => {
   console.log("plureslm-openclaw TEST GATE (standalone tsx, against dist/ build)");
   await gateA();
   gateB();
   gateC();
+  gateD();
   console.log(`\n=== RESULT: ${failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"} ===`);
   process.exit(failures === 0 ? 0 : 1);
 })().catch((err) => {
