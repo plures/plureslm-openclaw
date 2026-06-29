@@ -618,7 +618,7 @@ export class PluresLmStore {
 
   /**
    * Link-on-write: create associative edges among the chunks written at/after
-   * `sinceIso` (this sync's freshly-touched `session` nodes), so memory-core
+   * `sinceEpoch` (this sync's freshly-touched `session` nodes), so memory-core
    * gains structure a flat store cannot — "the other memories written in the
    * same session window / same category as this one".
    *
@@ -627,8 +627,16 @@ export class PluresLmStore {
    * over whatever set the prior step produced. Without the pre-filter,
    * `auto_link` would attempt to link the whole store (~499,500 candidate pairs
    * at 1k nodes). The filter scopes it to this sync's fresh `session` set:
-   * `category == "session" AND timestamp >= sinceIso` (both are top-level fields
-   * of the chunk `data` that `sync()` writes, so they resolve in the filter).
+   * `category == "session" AND syncEpoch >= sinceEpoch`.
+   *
+   * NOTE on the narrowing key (verified against `ops/filter.rs`): the engine's
+   * `>=` (`compare_numeric`) only compares JSON *numbers* — it returns false for
+   * a String field, with NO string-ordering fallback. So an ISO-string
+   * `timestamp >= "<iso>"` filter is ALWAYS empty (proven: it dropped the set to
+   * 0 and formed 0 edges). We therefore narrow on the NUMERIC `data.syncEpoch`
+   * (`Date.now()` stamped on every chunk at sync start) instead, which `>=`
+   * actually supports. `category` is a string and uses `==` (which does compare
+   * strings), so it is unaffected.
    *
    * `algorithms` is passed EXPLICITLY: an empty array makes the engine default
    * to ALL THREE algorithms, including the inert lexical `semantic` (Jaccard
@@ -641,7 +649,7 @@ export class PluresLmStore {
    * so a failed link never breaks `sync()`'s write contract.
    */
   linkRecent(
-    sinceIso: string,
+    sinceEpoch: number,
     algorithms: string[] = ["category", "temporal"],
     minStrength = 0.5,
   ): void {
@@ -652,7 +660,7 @@ export class PluresLmStore {
           predicate: {
             and: [
               { field: "category", cmp: "==", value: "session" },
-              { field: "timestamp", cmp: ">=", value: sinceIso },
+              { field: "syncEpoch", cmp: ">=", value: sinceEpoch },
             ],
           },
         },

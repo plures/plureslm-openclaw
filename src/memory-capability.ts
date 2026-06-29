@@ -21,6 +21,18 @@
  * idempotent and cheap when nothing changed (so the `reason:"search"` lazy
  * sync the host fires before every search does not re-embed unchanged content).
  *
+ * Associative recall (P1): after the per-file write loop, `sync()` calls
+ * `store.linkRecent(...)` ONCE to create graph edges among this sync's freshly
+ * written session chunks (same-category + same-temporal-window), and `search()`
+ * expands the direct vector/text hit set by pulling each top seed's graph
+ * neighbors in as additional `via:"graph"` hits (appended after the direct
+ * hits, de-duped, never reordered ahead of them — top-k precision preserved).
+ * This gives the store associativity a flat memory backend structurally lacks:
+ * "the other memories written alongside this one". Edge creation/traversal is
+ * caller-triggered from `sync()`/`search()` (a DB-reactive on-write trigger is
+ * a later phase), and v1 links on `category`+`temporal` only — embedding-cosine
+ * "semantic" edges are honestly deferred, not stubbed.
+ *
  * Honestly ABSENT this pass (per the Path B scope decision, not a stub): a
  * standing file-WATCHER for workspace memory-docs (MEMORY.md / memory/*.md).
  * Session files are ingested when the host passes them in `sessionFiles`, and
@@ -119,6 +131,30 @@ type Chunk = {
 
 function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** Narrow an unknown node payload to a plain record (or undefined). */
+function asPayload(data: unknown): Record<string, unknown> | undefined {
+  return data && typeof data === "object"
+    ? (data as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * Best-effort text snippet from a node payload, mirroring the read path's
+ * field priority (`content` -> `text` -> `summary` -> ...). Used for graph-
+ * expanded neighbor nodes, whose raw `data` we surface as an associative hit.
+ */
+function deriveSnippetFromData(data: Record<string, unknown>): string {
+  for (const key of ["content", "text", "summary", "value", "body", "note"]) {
+    const val = data[key];
+    if (typeof val === "string" && val.trim().length > 0) return val;
+  }
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return String(data);
+  }
 }
 
 /**
@@ -236,14 +272,23 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
     opts?: { maxResults?: number },
   ): Promise<SearchResult[]> {
     const hits = store.recall(query, opts?.maxResults);
-    return hits.map((hit): SearchResult => {
-      const lineCount = hit.snippet.split("\n").length;
+
+    // Map one recall hit to the SDK SearchResult shape. Shared between the
+    // DIRECT vector/text hits and the associative GRAPH hits so provenance
+    // (source/line/citation/score) is derived identically.
+    const toResult = (
+      id: string,
+      score: number,
+      snippet: string,
+      category: string | undefined,
+      data: Record<string, unknown> | undefined,
+      via: "vector" | "text" | "graph",
+      seedId?: string,
+    ): SearchResult => {
+      const lineCount = snippet.split("\n").length;
       // Honor the stored `source`/line metadata when present (written by
       // sync()); fall back to defaults for nodes that predate the write path.
-      const payload =
-        hit.data && typeof hit.data === "object"
-          ? (hit.data as Record<string, unknown>)
-          : undefined;
+      const payload = data;
       const storedSource = payload?.source;
       const source: "memory" | "sessions" =
         storedSource === "sessions" ? "sessions" : "memory";
@@ -255,20 +300,64 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
         typeof payload?.endLine === "number" && payload.endLine >= startLine
           ? payload.endLine
           : Math.max(startLine, lineCount);
+      // Graph hits have no cosine/text score of their own — they are surfaced by
+      // association, so we set neither vectorScore nor textScore and carry an
+      // honest provenance citation noting the seed they were reached from.
+      const citation =
+        via === "graph"
+          ? `plureslm:graph:${seedId ?? "?"}->${id}`
+          : category
+            ? `plureslm:${category}:${id}`
+            : `plureslm:${id}`;
       return {
-        path: hit.id,
+        path: id,
         startLine,
         endLine,
-        score: hit.score,
-        vectorScore: hit.via === "vector" ? hit.score : undefined,
-        textScore: hit.via === "text" ? hit.score : undefined,
-        snippet: hit.snippet,
+        score,
+        vectorScore: via === "vector" ? score : undefined,
+        textScore: via === "text" ? score : undefined,
+        snippet,
         source,
-        citation: hit.category
-          ? `plureslm:${hit.category}:${hit.id}`
-          : `plureslm:${hit.id}`,
+        citation,
       };
-    });
+    };
+
+    const results: SearchResult[] = hits.map((hit) =>
+      toResult(hit.id, hit.score, hit.snippet, hit.category, asPayload(hit.data), hit.via),
+    );
+
+    // --- Associative graph expansion (P1) ------------------------------------
+    // After the DIRECT vector+text hits, pull in adjacent memories via the
+    // edges link-on-write created (same session window / same category). This
+    // gives memory-core associativity a flat store structurally cannot: "the
+    // other memories written alongside this hit". Precision guard: graph hits
+    // are APPENDED AFTER the direct hits (never reordered ahead of them) and
+    // de-duped by id, so top-k precision of the primary results is preserved.
+    // Bounded blast radius: expand only from the top-3 seeds, depth 1.
+    const SEED_N = 3;
+    const EXPAND_DEPTH = 1;
+    const seen = new Set(results.map((r) => r.path));
+    const seeds = hits.slice(0, SEED_N);
+    for (const seed of seeds) {
+      let neighbors: Array<{ id: string; data: Record<string, unknown> }>;
+      try {
+        neighbors = store.neighbors(seed.id, EXPAND_DEPTH);
+      } catch {
+        neighbors = []; // best-effort: expansion never breaks the read path
+      }
+      for (const n of neighbors) {
+        if (seen.has(n.id)) continue; // de-dupe; never displace a direct hit
+        seen.add(n.id);
+        const snippet = deriveSnippetFromData(n.data);
+        const category =
+          typeof n.data.category === "string" ? n.data.category : undefined;
+        results.push(
+          toResult(n.id, seed.score, snippet, category, n.data, "graph", seed.id),
+        );
+      }
+    }
+
+    return results;
   }
 
   async function readFile(params: {
@@ -386,6 +475,14 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
 
     let completed = 0;
     const nowIso = new Date().toISOString();
+    // Numeric lower bound for the post-loop associative link pass. Every chunk
+    // written this sync is stamped with `data.syncEpoch === syncStartEpoch`, so
+    // a NUMERIC `syncEpoch >= syncStartEpoch` filter scopes link-on-write to
+    // exactly this sync's fresh set. We use a numeric epoch (not the ISO
+    // `timestamp` string) because the engine's `>=` only compares numbers — an
+    // ISO-string `>=` filter is always empty (see PluresLmStore.linkRecent).
+    const syncStartEpoch = Date.now();
+    let wroteAny = false;
 
     for (const item of work) {
       let rawText: string;
@@ -422,16 +519,33 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
           mtimeMs: stat.mtimeMs,
           size: stat.size,
           timestamp: nowIso,
+          // Numeric per-sync stamp used by link-on-write's pre-filter
+          // (`syncEpoch >= syncStartEpoch`). Numeric because the engine's `>=`
+          // only compares numbers; the ISO `timestamp` above is for display/
+          // ordering and is NOT a valid `>=` filter key.
+          syncEpoch: syncStartEpoch,
         } as Record<string, unknown>,
       }));
 
       if (nodes.length > 0) {
         // Dirty-tracked batch write through the SAME handle; auto-embeds text.
-        store.store(nodes);
+        const { written } = store.store(nodes);
+        if (written > 0) wroteAny = true;
       }
 
       completed += 1;
       params?.progress?.({ completed, total, label: item.path });
+    }
+
+    // Link-on-write (associative recall, P1): run ONCE after the whole per-file
+    // loop closes — not per file — so `auto_link` sees ALL chunks written this
+    // sync at once (including cross-file same-category/same-window pairs) and is
+    // invoked a single time rather than O(n²) per file. Skip entirely when
+    // nothing was actually written (a clean/idempotent re-sync stays cheap: no
+    // dirty nodes => no new edges to form). `linkRecent` is best-effort and
+    // never throws out of `sync()`, preserving the write contract.
+    if (wroteAny) {
+      store.linkRecent(syncStartEpoch);
     }
   }
 
