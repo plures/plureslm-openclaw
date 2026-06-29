@@ -1,18 +1,38 @@
 /**
- * Bridge from the read-only {@link PluresLmStore} to OpenClaw's exclusive
+ * Bridge from the read+write {@link PluresLmStore} to OpenClaw's exclusive
  * memory capability contract.
  *
- * The exclusive read path is `MemoryPluginCapability.runtime`
+ * The exclusive memory path is `MemoryPluginCapability.runtime`
  * (`MemoryPluginRuntime`), whose `getMemorySearchManager(...)` returns a
  * `MemorySearchManager`. We implement that manager's READ surface:
  *   - `search(query, opts)` -> ranked `MemorySearchResult[]`
  *   - `readFile({ relPath })` -> `MemoryReadResult` (relPath is a node id)
  *   - `status()` -> `MemoryProviderStatus`
  *   - `probeEmbeddingAvailability()` / `probeVectorAvailability()`
+ * AND the WRITE surface:
+ *   - `sync(params?)` -> ingests session-transcript files (and, when a
+ *     `sourceDir` is configured + `force` is set, that directory) into the
+ *     store so the content becomes recallable by `search()`.
  *
- * Stage A implements NO write path: there is no `sync`, no flush, no put. The
- * backend config reports the generic `builtin` backend (we are not a qmd CLI).
+ * Write path: `sync()` chunks each file, sha256-hashes each chunk for cheap
+ * dirty-tracking, and `put()`s `{content,category,type,source,path,hash,...}`
+ * nodes through the SAME memoized embedder-backed handle the read path uses
+ * (text content auto-embeds), then builds the vector index once. It is
+ * idempotent and cheap when nothing changed (so the `reason:"search"` lazy
+ * sync the host fires before every search does not re-embed unchanged content).
+ *
+ * Honestly ABSENT this pass (per the Path B scope decision, not a stub): a
+ * standing file-WATCHER for workspace memory-docs (MEMORY.md / memory/*.md).
+ * Session files are ingested when the host passes them in `sessionFiles`, and
+ * a configured `sourceDir` is rescanned on `force:true`; continuous memory-doc
+ * watching is additive and can be layered on without changing this seam.
+ *
+ * The backend config reports the generic `builtin` backend (we are not a qmd CLI).
  */
+
+import { createHash } from "node:crypto";
+import { type Dirent, readFileSync, readdirSync, statSync } from "node:fs";
+import { basename, extname, join, relative } from "node:path";
 
 import type {
   MemoryPluginCapability,
@@ -63,6 +83,14 @@ export type PluresLmCapabilityConfig = {
   embeddingModel: string;
   vectorThreshold?: number;
   maxResults?: number;
+  /**
+   * Optional absolute path to a directory of memory-doc source files
+   * (markdown/text) to ingest on a `force:true` sync. When unset, the forced
+   * full-rescan branch is a no-op — that is honest (nothing to scan), not a
+   * stub. Session transcripts passed via `sessionFiles` are ingested
+   * regardless of this setting.
+   */
+  sourceDir?: string;
 };
 
 function toStoreOptions(cfg: PluresLmCapabilityConfig): PluresLmStoreOptions {
@@ -72,6 +100,128 @@ function toStoreOptions(cfg: PluresLmCapabilityConfig): PluresLmStoreOptions {
     vectorThreshold: cfg.vectorThreshold,
     maxResults: cfg.maxResults,
   };
+}
+
+// --- Write-path helpers (chunking, hashing, id derivation) ------------------
+
+/** Max characters per chunk before we split. Keeps embeddings well-formed. */
+const CHUNK_MAX_CHARS = 2000;
+/** File extensions we treat as ingestible text. */
+const TEXT_EXTS = new Set([".md", ".markdown", ".txt", ".text", ".mdx"]);
+
+type Chunk = {
+  content: string;
+  chunkIndex: number;
+  startLine: number;
+  endLine: number;
+  hash: string;
+};
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/**
+ * Split markdown/text into reasonably-sized chunks, tracking 1-based start/end
+ * line numbers per chunk. Splits on blank-line paragraph boundaries and packs
+ * paragraphs up to {@link CHUNK_MAX_CHARS}; a single oversized paragraph is
+ * emitted on its own (we do not mid-word slice — line fidelity matters more
+ * than a hard cap here). Empty/whitespace-only input yields no chunks.
+ */
+function chunkText(raw: string): Chunk[] {
+  const lines = raw.split(/\r?\n/);
+  const chunks: Chunk[] = [];
+  let buf: string[] = [];
+  let bufStartLine = 1; // 1-based line of the first buffered line
+  let cursorLine = 0; // 1-based line index as we walk
+
+  const flush = (endLine: number) => {
+    const content = buf.join("\n").trim();
+    if (content.length > 0) {
+      chunks.push({
+        content,
+        chunkIndex: chunks.length,
+        startLine: bufStartLine,
+        endLine,
+        hash: sha256(content),
+      });
+    }
+    buf = [];
+  };
+
+  let pendingParagraph: string[] = [];
+  let paragraphStartLine = 1;
+  let bufChars = 0;
+
+  const closeParagraph = (paraEndLine: number) => {
+    if (pendingParagraph.length === 0) return;
+    const paraText = pendingParagraph.join("\n");
+    const paraChars = paraText.length;
+    // If adding this paragraph would overflow the current buffer, flush first.
+    if (bufChars > 0 && bufChars + paraChars > CHUNK_MAX_CHARS) {
+      flush(paragraphStartLine - 1);
+      bufStartLine = paragraphStartLine;
+      bufChars = 0;
+    }
+    if (buf.length === 0) bufStartLine = paragraphStartLine;
+    if (buf.length > 0) buf.push("");
+    buf.push(...pendingParagraph);
+    bufChars += paraChars + (bufChars > 0 ? 1 : 0);
+    pendingParagraph = [];
+    // A single paragraph at/over the cap stands alone.
+    if (paraChars >= CHUNK_MAX_CHARS) {
+      flush(paraEndLine);
+      bufChars = 0;
+    }
+  };
+
+  for (const line of lines) {
+    cursorLine += 1;
+    if (line.trim().length === 0) {
+      closeParagraph(cursorLine - 1);
+      continue;
+    }
+    if (pendingParagraph.length === 0) paragraphStartLine = cursorLine;
+    pendingParagraph.push(line);
+  }
+  closeParagraph(cursorLine);
+  flush(cursorLine);
+  return chunks;
+}
+
+/** Slugify a path fragment for use inside a node id. */
+function slugify(value: string): string {
+  return value
+    .replace(/[\\/\s]+/g, "-")
+    .replace(/[^A-Za-z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+}
+
+/** File stem (name without extension), slugified, for session ids. */
+function fileStemSlug(filePath: string): string {
+  return slugify(basename(filePath, extname(filePath)));
+}
+
+/** Recursively list ingestible text files under a directory (best-effort). */
+function listTextFiles(dir: string): string[] {
+  const out: string[] = [];
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out; // unreadable dir — honest no-op
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...listTextFiles(full));
+    } else if (entry.isFile() && TEXT_EXTS.has(extname(entry.name).toLowerCase())) {
+      out.push(full);
+    }
+  }
+  return out;
 }
 
 /**
@@ -88,15 +238,32 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
     const hits = store.recall(query, opts?.maxResults);
     return hits.map((hit): SearchResult => {
       const lineCount = hit.snippet.split("\n").length;
+      // Honor the stored `source`/line metadata when present (written by
+      // sync()); fall back to defaults for nodes that predate the write path.
+      const payload =
+        hit.data && typeof hit.data === "object"
+          ? (hit.data as Record<string, unknown>)
+          : undefined;
+      const storedSource = payload?.source;
+      const source: "memory" | "sessions" =
+        storedSource === "sessions" ? "sessions" : "memory";
+      const startLine =
+        typeof payload?.startLine === "number" && payload.startLine > 0
+          ? payload.startLine
+          : 1;
+      const endLine =
+        typeof payload?.endLine === "number" && payload.endLine >= startLine
+          ? payload.endLine
+          : Math.max(startLine, lineCount);
       return {
         path: hit.id,
-        startLine: 1,
-        endLine: Math.max(1, lineCount),
+        startLine,
+        endLine,
         score: hit.score,
         vectorScore: hit.via === "vector" ? hit.score : undefined,
         textScore: hit.via === "text" ? hit.score : undefined,
         snippet: hit.snippet,
-        source: "memory",
+        source,
         citation: hit.category
           ? `plureslm:${hit.category}:${hit.id}`
           : `plureslm:${hit.id}`,
@@ -132,7 +299,7 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
       chunks: s.totalNodes,
       files: Object.keys(s.typeCounts).length || undefined,
       dbPath: s.dbPath,
-      sources: ["memory"] as Array<"memory" | "sessions">,
+      sources: ["memory", "sessions"] as Array<"memory" | "sessions">,
       vector: {
         enabled: true,
         storeAvailable: true,
@@ -153,7 +320,122 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
     return store.probeVector();
   }
 
-  // Shape matches `MemorySearchManager` (read-only subset; no `sync`).
+  /**
+   * Ingest session-transcript files (and, on `force:true`, a configured
+   * `sourceDir`) into the store so the content is recallable by `search()`.
+   *
+   * Matches the SDK `MemorySearchManager.sync` signature exactly. Behavior:
+   *   - `params === undefined` is safe: sync whatever is configured/dirty
+   *     (effectively a no-op when no sessionFiles + no force).
+   *   - For each `sessionFiles` path: chunk -> sha256 per chunk -> nodes with
+   *     id `mem:session:<fileStem>:<chunkIndex>`, category/source "session".
+   *   - On `force:true` with a configured `sourceDir`: rescan that dir the same
+   *     way with id `mem:memory:<relPathSlug>:<chunkIndex>`, category/source
+   *     "memory". Without a `sourceDir`, this branch is a no-op (honest).
+   *   - Dirty-tracking in {@link PluresLmStore.store} keeps it cheap when the
+   *     content is unchanged (the lazy `reason:"search"` sync stays idempotent).
+   *   - `progress({completed,total,label})` is invoked as files are processed
+   *     when the host supplied a callback.
+   */
+  async function sync(params?: {
+    reason?: string;
+    force?: boolean;
+    sessionFiles?: string[];
+    progress?: (update: { completed: number; total: number; label?: string }) => void;
+  }): Promise<void> {
+    const sessionFiles = (params?.sessionFiles ?? []).filter(
+      (p) => typeof p === "string" && p.trim().length > 0,
+    );
+    const force = params?.force === true;
+
+    // Build the work list: explicit session files, plus the configured source
+    // dir on a forced rescan. Each work item carries how to derive its node id
+    // and its category/source tag.
+    type WorkItem = {
+      path: string;
+      kind: "session" | "memory";
+      idStem: string; // already-slugged stem used in the node id
+    };
+    const work: WorkItem[] = [];
+
+    for (const filePath of sessionFiles) {
+      work.push({ path: filePath, kind: "session", idStem: fileStemSlug(filePath) });
+    }
+
+    if (force && cfg.sourceDir) {
+      const root = cfg.sourceDir;
+      for (const filePath of listTextFiles(root)) {
+        let rel = filePath;
+        try {
+          rel = relative(root, filePath) || basename(filePath);
+        } catch {
+          rel = basename(filePath);
+        }
+        work.push({ path: filePath, kind: "memory", idStem: slugify(rel) });
+      }
+    }
+    // NOTE: when `sessionFiles` is empty and `force` is false (e.g. the lazy
+    // `reason:"search"` sync), there is intentionally nothing to do here — a
+    // standing memory-doc watcher is ABSENT this pass by design (see header).
+
+    const total = work.length;
+    if (total === 0) {
+      params?.progress?.({ completed: 0, total: 0, label: params?.reason });
+      return;
+    }
+
+    let completed = 0;
+    const nowIso = new Date().toISOString();
+
+    for (const item of work) {
+      let rawText: string;
+      let stat: { mtimeMs: number; size: number };
+      try {
+        rawText = readFileSync(item.path, "utf8");
+        const st = statSync(item.path);
+        stat = { mtimeMs: st.mtimeMs, size: st.size };
+      } catch {
+        // Unreadable/disappeared file — skip it honestly; report progress.
+        completed += 1;
+        params?.progress?.({ completed, total, label: item.path });
+        continue;
+      }
+
+      const chunks = chunkText(rawText);
+      const source: "sessions" | "memory" =
+        item.kind === "session" ? "sessions" : "memory";
+      const category = item.kind; // "session" | "memory"
+      const idPrefix = item.kind === "session" ? "mem:session" : "mem:memory";
+
+      const nodes = chunks.map((chunk) => ({
+        id: `${idPrefix}:${item.idStem}:${chunk.chunkIndex}`,
+        data: {
+          content: chunk.content,
+          category,
+          type: "memory-chunk",
+          source,
+          path: item.path,
+          chunkIndex: chunk.chunkIndex,
+          startLine: chunk.startLine,
+          endLine: chunk.endLine,
+          hash: chunk.hash,
+          mtimeMs: stat.mtimeMs,
+          size: stat.size,
+          timestamp: nowIso,
+        } as Record<string, unknown>,
+      }));
+
+      if (nodes.length > 0) {
+        // Dirty-tracked batch write through the SAME handle; auto-embeds text.
+        store.store(nodes);
+      }
+
+      completed += 1;
+      params?.progress?.({ completed, total, label: item.path });
+    }
+  }
+
+  // Shape matches `MemorySearchManager` (read surface + write `sync`).
   return {
     store,
     manager: {
@@ -162,6 +444,7 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
       status,
       probeEmbeddingAvailability,
       probeVectorAvailability,
+      sync,
     },
   };
 }
@@ -189,6 +472,7 @@ export function buildMemoryCapability(
         embeddingModel: cfg.embeddingModel ?? "BAAI/bge-small-en-v1.5",
         vectorThreshold: cfg.vectorThreshold,
         maxResults: cfg.maxResults,
+        sourceDir: cfg.sourceDir,
       };
       const { manager, store } = createPluresLmSearchManager(resolved);
       const open = store.probeOpen();

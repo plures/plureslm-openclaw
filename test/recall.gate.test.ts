@@ -39,8 +39,10 @@ const TSX_CLI = join(here, "..", "node_modules", "tsx", "dist", "cli.mjs");
 const COPY_FIXTURE =
   "C:/Users/kbristol/.openclaw/workspace/.tmp/plureslm-store-copy-20260626";
 
-function runChild(dir: string, phase: "seed" | "read") {
-  const res = spawnSync(process.execPath, [TSX_CLI, CHILD, dir, phase], {
+function runChild(dir: string, phase: "seed" | "write" | "read", query?: string) {
+  const args = [TSX_CLI, CHILD, dir, phase];
+  if (phase === "read" && query) args.push(query);
+  const res = spawnSync(process.execPath, args, {
     encoding: "utf8",
     timeout: 120_000,
   });
@@ -89,7 +91,7 @@ describe("plureslm read-path memory capability", () => {
     PluresLmStore._resetForTests(COPY_FIXTURE);
   });
 
-  it("B. seeds then recalls a known store cross-process (non-empty recall + count match)", () => {
+  it("B. seeds then recalls a known store cross-process (non-empty recall + count stable)", () => {
     const dir = mkdtempSync(join(tmpdir(), "plureslm-gate-"));
     try {
       // Phase 1: seed (own process).
@@ -97,8 +99,13 @@ describe("plureslm read-path memory capability", () => {
       console.log("[GATE B] seed stdout:", seed.stdout);
       expect(seed.res.status, `seed exit; stderr=${seed.stderr}`).toBe(0);
       expect(seed.parsed?.phase).toBe("seed");
+      // This native bootstraps a baseline of `praxis_constraint` nodes into
+      // every fresh store, so totals are `baseline + seeded`. Assert the 3
+      // seeded nodes are PRESENT (>= 3) and prove correctness via recall, rather
+      // than pinning an exact total that depends on the native bootstrap set.
       const seedStats = seed.parsed?.stats as { totalNodes?: number } | undefined;
-      expect(seedStats?.totalNodes).toBe(3);
+      const seedTotal = seedStats?.totalNodes ?? -1;
+      expect(seedTotal).toBeGreaterThanOrEqual(3);
 
       // Phase 2: read through the real plugin path (fresh process).
       const read = runChild(dir, "read");
@@ -106,8 +113,10 @@ describe("plureslm read-path memory capability", () => {
       expect(read.res.status, `read exit; stderr=${read.stderr}`).toBe(0);
       expect(read.parsed?.ok, `read error: ${read.parsed?.error ?? ""}`).toBe(true);
 
-      // Count consistency: status node count matches what we seeded.
-      expect(read.parsed?.statusTotalNodes).toBe(3);
+      // Count consistency: status total is >= 3 and stable across processes.
+      const readTotal = read.parsed?.statusTotalNodes as number;
+      expect(readTotal).toBeGreaterThanOrEqual(3);
+      expect(readTotal).toBe(seedTotal);
       expect(read.parsed?.backend).toBe("builtin");
       expect(read.parsed?.statusProvider).toBe("plureslm");
 
@@ -119,6 +128,46 @@ describe("plureslm read-path memory capability", () => {
       expect(String(top.snippet)).toContain("long-term memory");
       expect(String(top.source)).toBe("memory");
       expect(String(top.citation)).toContain("plureslm:");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("C. ingests a sentinel via the SHIPPED write path (sync()) then recalls it cross-process", () => {
+    const SENTINEL = "ZQX7731SENTINEL";
+    const QUERY = "migration runbook lives in the encrypted ops vault";
+    const dir = mkdtempSync(join(tmpdir(), "plureslm-gateC-"));
+    try {
+      // Phase 1: ingest via buildMemoryCapability -> getMemorySearchManager ->
+      // manager.sync() (the REAL write path, NOT seedStoreForTests).
+      const write = runChild(dir, "write");
+      console.log("[GATE C] write stdout:", write.stdout);
+      expect(write.res.status, `write exit; stderr=${write.stderr}`).toBe(0);
+      expect(write.parsed?.ok, `write error: ${write.parsed?.error ?? ""}`).toBe(true);
+      const delta = write.parsed?.delta as number;
+      const after = write.parsed?.afterTotalNodes as number;
+      expect(delta).toBeGreaterThanOrEqual(1); // sync() actually wrote a node
+      expect(write.parsed?.progressCalls as number).toBeGreaterThanOrEqual(1);
+      expect(after).toBeGreaterThan(0);
+
+      // Phase 2: reopen in a fresh process (lock released) and recall sentinel.
+      const read = runChild(dir, "read", QUERY);
+      console.log("[GATE C] read stdout:", read.stdout);
+      expect(read.res.status, `read exit; stderr=${read.stderr}`).toBe(0);
+      expect(read.parsed?.ok, `read error: ${read.parsed?.error ?? ""}`).toBe(true);
+      const readTotal = read.parsed?.statusTotalNodes as number;
+      expect(readTotal).toBeGreaterThan(0);
+      expect(readTotal).toBe(after); // durable across the process/lock boundary
+
+      const hits = (read.parsed?.hits as Array<Record<string, unknown>>) ?? [];
+      expect(hits.length).toBeGreaterThan(0);
+      const sentinelHit = hits.find((h) => String(h.snippet).includes(SENTINEL));
+      expect(sentinelHit, `sentinel not recalled; hits=${JSON.stringify(hits)}`).toBeTruthy();
+      expect(Number(sentinelHit!.score)).toBeGreaterThan(0);
+      expect(String(sentinelHit!.path)).toContain("mem:session:");
+      expect(String(sentinelHit!.source)).toBe("sessions");
+      // Tolerate vector OR text retrieval (embeddings may be unavailable in env).
+      expect(["vector", "text"]).toContain(String(sentinelHit!.via));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

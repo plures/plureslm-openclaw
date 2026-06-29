@@ -1,7 +1,8 @@
 {
   "id": "plureslm",
   "name": "PluresLM Memory",
-  "description": "Read-path memory recall for OpenClaw backed by @plures/pluresdb-native. Stage A: recall/search/status only — no write path, no flush, no slot mutation beyond the exclusive memory capability.",
+  "description": "Read+write memory capability for OpenClaw backed by @plures/pluresdb-native: recall/search/status plus sync() ingest of session transcripts (and an optional configured source directory) into the store, via the exclusive memory capability slot.",
+  "kind": "memory",
   "contracts": {
     "memoryCapability": true
   },
@@ -33,6 +34,10 @@
         "description": "Default maximum number of recall hits to return.",
         "minimum": 1,
         "default": 8
+      },
+      "sourceDir": {
+        "type": "string",
+        "description": "Optional absolute path to a directory of memory-doc source files (markdown/text). When set, a force:true sync rescans it and ingests its files as memory-source nodes. When omitted, only session transcripts passed via sessionFiles are ingested."
       }
     }
   }
