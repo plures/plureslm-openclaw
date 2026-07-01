@@ -21,38 +21,41 @@ an LLM reflection pass, keep memory-core as the safety net.
 
 ## Children
 
-### P0 — Own the memory slot safely  ·  STATUS: IN FLIGHT (Path B, TASK-2026-06-29-PATHB)
+> **STATUS (2026-07-01):** P0 ✅ · P1 ✅ · H ✅ · P3 ✅ · P4 ✅ all CLOSED + merged to `main`. Only **P2** remains (analyze done; implement pending). Epic near-complete.
+
+### P0 — Own the memory slot safely  ·  ✅ CLOSED (merged)
 Real `sync()` write path so plureslm can capture (not just read) memory, manifest `kind:memory`,
-slot flip with memory-core fallback. **Gate-blocking for P1–P4** (they build on this write path).
-- Done: analyze, implement, test, qa. **DEF-PATHB-1** found (native `put()` no auto-embed) →
-  fixed via explicit `putWithEmbedding`. Verify (slot flip) pending.
+slot flip with memory-core fallback.
+- All gates PASSED (orchestrator-verified 2026-06-29): analyze, implement, test, qa, verify. **DEF-PATHB-1** (native `put()` no auto-embed) → FIXED via explicit `putWithEmbedding` in `#writeNode` (vector recall 0→1). Slot flip proven: provider=plureslm when configured, graceful memory-core fallback (honest `{manager:null,error}`) when not.
 - Tracker: `PATH-B-MILESTONES.md`.
 
-### P1 — Graph-native associative recall  ·  the marquee win  ·  depends on P0
+### P1 — Graph-native associative recall  ·  the marquee win  ·  ✅ CLOSED (merged, `a2a8d00`)
 On `sync()`, after `put`, run an `AutoLink` procedure to create typed edges between related
 memory nodes; at recall, expand hits via `GraphNeighbors`/`GraphPath` so retrieval surfaces
 *associatively-related* memory memory-core's flat store can't reach. `.px`-first: the linking +
 expansion logic is a procedure, the Rust/native side only triggers it.
-- Spike spec: `epic/P1-associative-recall-SPEC.md` (design can start now; impl waits on P0 gate).
+- CLOSED: associative recall proven at the MemorySearchManager boundary. Spec: `epic/P1-associative-recall-SPEC.md`.
 
-### P2 — Structural promotion signal (PageRank/cluster) → deep-phase consolidation  ·  depends on P1
+### P2 — Structural promotion signal (PageRank/cluster) → deep-phase consolidation  ·  ⬜ ANALYZE DONE, IMPLEMENT PENDING (only remaining child)
 A deep-phase procedure scoring promotion candidates by `GraphPagerank`/`GraphClusters`
 (structural importance) as an *evidence signal* feeding a dreaming-style consolidation — NOT a
 replacement for an LLM reflection pass, an additional structural signal alongside it.
-- Spike spec: `epic/P2-structural-promotion-SPEC.md`.
+- Spike spec: `epic/P2-structural-promotion-SPEC.md` (analyze complete 2026-07-01).
+- **Corrected ground truth (verified against real code):** analytics are native IR ops (`graph_pagerank`/`graph_clusters(louvain)`) inside `consolidate()`; nodes do NOT carry pagerank/cluster/salience (payload mutation refused); salience = `topRanked: string[]` top-5 in the checkpoint. Direct recall = raw `score` sorted alone (pluresdb.ts:926), no blended coefficients here.
+- **🔑 Real blocker (P2-0):** `#readCheckpoint` (pluresdb.ts:1151) currently DROPS `topRanked` on read → salience is computed→persisted→discarded. First P2 change = widen that reader + add `salientIds()`. Proposed recall rebalance: `eff = 1.0·score + 0.15·score·[id ∈ salient]` (degrades to identical when salient set empty). Gates P2-G0..G4.
 
-### P3 — Reactive in-DB consolidation  ·  kills the cron/heartbeat dependency  ·  depends on P0
-Replace the external-cron consolidation assumption with `agensTimer` + `agensStateWatch` +
-`subscribe`: the store consolidates itself reactively from inside PluresDB (C-PLURES-004 — a
+### P3 — Reactive in-DB consolidation  ·  kills the cron/heartbeat dependency  ·  ✅ CLOSED (merged, `af9ba26` / PR #7)
+Replace the external-cron consolidation assumption with a pull/tick `execIr` sweep (native
+binding has no push): the store consolidates itself reactively from inside PluresDB (C-PLURES-004 — a
 write causes reactive procedure execution, not a pipeline that calls things).
-- Spike spec: `epic/P3-reactive-sweep-SPEC.md`.
+- CLOSED: auto_link + graph_pagerank + louvain salience → durable monotonic checkpoint, idempotent (edges stable across 6 sweeps), durable across process reopen. Verified green on merged main. Spec: `epic/P3-reactive-sweep-SPEC.md`.
 
-### P4 — Constraint-governed writes (`pxOnAction`)  ·  depends on P0
+### P4 — Constraint-governed writes (`pxOnAction`)  ·  ✅ CLOSED (merged, `af9ba26` / PR #7)
 Express promotion/redaction/retention rules as `.px` enforced via `pxOnAction`: declarative,
 auditable, reversible memory governance. Aligns directly with the Headroom port (also `.px`).
-- Spike spec: `epic/P4-governed-writes-SPEC.md`.
+- CLOSED: C-MEM-REDACT blocks secret-shaped writes (native pxOnAction, fails closed, whole-chunk refusal); src/redact.ts detects PEM/AWS/GitHub/Google/Slack/Stripe/OpenAI/JWT/Azure/bearer + entropy, confusion matrix TP=11 FP=0 TN=7 FN=0. Verified green on merged main. Spec: `epic/P4-governed-writes-SPEC.md`.
 
-### H — Headroom token-compression port  ·  agens-brought IP  ·  parallelizable design
+### H — Headroom token-compression port  ·  agens-brought IP  ·  ✅ CLOSED (merged, `4c15874`)
 Port the pares-agens **Headroom** capability into the pluresLM/OpenClaw context path. Headroom
 is ALREADY PluresDB-native + `.px`-based (so it slots into P4's governance direction):
 - `HeadroomActionHandler` — a `.px` ActionHandler: tiktoken-based token counting + compression
