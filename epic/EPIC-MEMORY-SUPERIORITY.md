@@ -21,7 +21,7 @@ an LLM reflection pass, keep memory-core as the safety net.
 
 ## Children
 
-> **STATUS (2026-07-01):** P0 ✅ · P1 ✅ · H ✅ · P3 ✅ · P4 ✅ all CLOSED + merged to `main`. Only **P2** remains (analyze done; implement pending). Epic near-complete.
+> **STATUS (2026-07-01):** 🎉 **EPIC COMPLETE** — P0 ✅ · P1 ✅ · P2 ✅ · H ✅ · P3 ✅ · P4 ✅ ALL CLOSED + merged to `main` (tip `9b77b91`). Salience is computed → persisted → **consumed**. Every gate green on the merged tree.
 
 ### P0 — Own the memory slot safely  ·  ✅ CLOSED (merged)
 Real `sync()` write path so plureslm can capture (not just read) memory, manifest `kind:memory`,
@@ -36,13 +36,10 @@ memory nodes; at recall, expand hits via `GraphNeighbors`/`GraphPath` so retriev
 expansion logic is a procedure, the Rust/native side only triggers it.
 - CLOSED: associative recall proven at the MemorySearchManager boundary. Spec: `epic/P1-associative-recall-SPEC.md`.
 
-### P2 — Structural promotion signal (PageRank/cluster) → deep-phase consolidation  ·  ⬜ ANALYZE DONE, IMPLEMENT PENDING (only remaining child)
-A deep-phase procedure scoring promotion candidates by `GraphPagerank`/`GraphClusters`
-(structural importance) as an *evidence signal* feeding a dreaming-style consolidation — NOT a
-replacement for an LLM reflection pass, an additional structural signal alongside it.
-- Spike spec: `epic/P2-structural-promotion-SPEC.md` (analyze complete 2026-07-01).
-- **Corrected ground truth (verified against real code):** analytics are native IR ops (`graph_pagerank`/`graph_clusters(louvain)`) inside `consolidate()`; nodes do NOT carry pagerank/cluster/salience (payload mutation refused); salience = `topRanked: string[]` top-5 in the checkpoint. Direct recall = raw `score` sorted alone (pluresdb.ts:926), no blended coefficients here.
-- **🔑 Real blocker (P2-0):** `#readCheckpoint` (pluresdb.ts:1151) currently DROPS `topRanked` on read → salience is computed→persisted→discarded. First P2 change = widen that reader + add `salientIds()`. Proposed recall rebalance: `eff = 1.0·score + 0.15·score·[id ∈ salient]` (degrades to identical when salient set empty). Gates P2-G0..G4.
+### P2 — Structural promotion signal (PageRank/cluster) → deep-phase consolidation  ·  ✅ CLOSED (merged, `9b77b91` / PR #8)
+Salience (PageRank/cluster) that P3 computes + persists is now CONSUMED by recall.
+- CLOSED: fixed the orphaned-salience bug (`#readCheckpoint` read back only `lastRunEpoch`/`runs`, dropping the persisted `topRanked`) → widened the reader + added `#salientIds()`; recall now sorts by `eff = score + 0.15·score·[id∈salient]` (proportional; **byte-identical to raw-score sort when salience is empty** — mathematically guaranteed, protects P1 precision). Retention protection = HONEST-ABSENCE SKIP (no node-eviction path exists; store is augment-only; inventing one would violate C-NOSTUB-001).
+- Gate witness: salient `sseed-7` (raw 0.87023) out-ranks non-salient `sseed-16` (raw 0.87374) — wins with a lower raw score, explicable only by the salience bonus. Real 24-node/276-edge graph. Pre-gate P2-G0: native `graph_pagerank` verified to populate `pagerank_score` varying by connectivity. Spec: `epic/P2-structural-promotion-SPEC.md`.
 
 ### P3 — Reactive in-DB consolidation  ·  kills the cron/heartbeat dependency  ·  ✅ CLOSED (merged, `af9ba26` / PR #7)
 Replace the external-cron consolidation assumption with a pull/tick `execIr` sweep (native
