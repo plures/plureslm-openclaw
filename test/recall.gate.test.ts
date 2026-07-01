@@ -173,3 +173,92 @@ describe("plureslm read-path memory capability", () => {
     }
   });
 });
+
+/**
+ * HARDENED P3+P4 GATE (vitest mirror). The full adversarial logic lives in the
+ * standalone runner `test/p3p4-hardened.gate.mts` (18-shape redaction matrix +
+ * TP/FP/TN/FN confusion matrix, governed-write FAIL-CLOSED, P3 consolidation
+ * idempotency/durability/best-effort). This mirror runs that runner as a child
+ * and asserts it exits 0 with a clean confusion matrix (TP=11 FP=0 TN=7 FN=0,
+ * 0 leaks) so `vitest run` covers the same security guarantees as `pnpm test`.
+ * Reuses the cross-process child pattern (the native takes an exclusive lock).
+ */
+describe("hardened P3+P4 gate (adversarial redaction matrix + consolidation idempotency)", () => {
+  const HARDENED_RUNNER = join(here, "p3p4-hardened.gate.mts");
+
+  it("blocks 11/11 secret shapes, 0 false-positives, fails closed, and consolidation is idempotent+durable", () => {
+    const res = spawnSync(process.execPath, [TSX_CLI, HARDENED_RUNNER], {
+      encoding: "utf8",
+      timeout: 240_000,
+    });
+    const out = (res.stdout ?? "") + "\n" + (res.stderr ?? "");
+    // The runner self-asserts every check and exits non-zero on ANY failure.
+    expect(res.status, `hardened gate runner failed; tail=\n${out.slice(-1600)}`).toBe(0);
+    expect(out).toContain("HARDENED RESULT: ALL CHECKS PASSED");
+    // Pin the security-critical confusion matrix explicitly (100% block / 0 FN / 0 FP).
+    expect(out, "confusion matrix not clean").toContain("CONFUSION MATRIX (detection): TP=11 FP=0 TN=7 FN=0");
+    expect(out, "a secret leaked into recall").toContain("secretLeaks=0");
+  });
+});
+
+/**
+ * P3+P4 QA REGRESSION GATE (vitest mirror). The full QA logic lives in the
+ * standalone runner `test/p3p4-qa.gate.mts` and pins the defects the QA stage
+ * found and fixed: the SECONDARY-FIELD secret leak (a live token hidden in
+ * `value`/`body`/`note`/an arbitrary content field used to be written then
+ * recalled — now refused), the NON-WEAKENING proof (a clean node carrying an
+ * id-shaped `hash` is still written; every secret shape still flags), the
+ * chunk-boundary contract (full-in-one refused; split never reassembled by
+ * recall), and consolidate-at-scale idempotency/durability. This mirror runs
+ * that runner as a child and asserts exit 0 so `vitest run` covers the same
+ * regression guarantees as `pnpm test`.
+ */
+describe("P3+P4 QA regression gate (secondary-field leak fix + non-weakening + scale)", () => {
+  const QA_RUNNER = join(here, "p3p4-qa.gate.mts");
+
+  it("refuses secrets in secondary content fields, does not over-block clean payloads, and stays idempotent at scale", () => {
+    const res = spawnSync(process.execPath, [TSX_CLI, QA_RUNNER], {
+      encoding: "utf8",
+      timeout: 240_000,
+    });
+    const out = (res.stdout ?? "") + "\n" + (res.stderr ?? "");
+    expect(res.status, `QA regression gate runner failed; tail=\n${out.slice(-1600)}`).toBe(0);
+    expect(out).toContain("QA REGRESSION RESULT: ALL CHECKS PASSED");
+    // Pin the safety-critical claims explicitly.
+    expect(out, "secondary-field secret not refused").toContain("QA-1 secret-in-value: REFUSED");
+    expect(out, "clean id-shaped-hash node was over-blocked").toContain("QA-2 clean node WITH id-shaped hash: WRITTEN");
+    expect(out, "split secret was reassembled by recall").toContain("QA-3 PINNED: split secret NEVER reassembled");
+  });
+});
+
+/**
+ * P3+P4 VERIFY GATE (vitest mirror) — the FINAL gate, loop-closer. The full
+ * end-to-end consumer-boundary proof lives in `test/p3p4-verify.driver.mts`:
+ * it drives the SHIPPED MemorySearchManager (buildMemoryCapability ->
+ * getMemorySearchManager -> sync()/search()) channel-agnostically (C-TEST-002)
+ * and proves, each reproduced across a FRESH process, (1) C-MEM-REDACT blocks a
+ * realistic batch end-to-end — credential chunks (content + a SECONDARY field +
+ * multiline PEM + AWS 40-char) are NEVER recalled and the raw secret NEVER
+ * appears in any snippet, while the clean memory IS recalled; (2) consolidation
+ * is bounded + idempotent + durable across a process restart with observable
+ * associative recall. This mirror runs that driver as a child and asserts exit 0
+ * so `vitest run` covers the same end-to-end guarantees as `pnpm test`.
+ */
+describe("P3+P4 VERIFY gate (C-MEM-REDACT end-to-end never-recalled + consolidation durable across restart)", () => {
+  const VERIFY_RUNNER = join(here, "p3p4-verify.driver.mts");
+
+  it("never recalls a secret (incl. the secondary-field case) and keeps the consolidation checkpoint durable across a fresh process", () => {
+    const res = spawnSync(process.execPath, [TSX_CLI, VERIFY_RUNNER], {
+      encoding: "utf8",
+      timeout: 300_000,
+    });
+    const out = (res.stdout ?? "") + "\n" + (res.stderr ?? "");
+    expect(res.status, `VERIFY driver failed; tail=\n${out.slice(-1800)}`).toBe(0);
+    expect(out).toContain("P3+P4 VERIFY RESULT: ALL CHECKS PASSED");
+    // Pin the headline safety/value claims explicitly.
+    expect(out, "secondary-field secret was recalled").toContain("PROOF1 secret-in-secondary-field(value): credential node NEVER recalled");
+    expect(out, "a raw secret surfaced in a snippet").toContain("PROOF1 NO raw secret in ANY snippet of a broad query");
+    expect(out, "clean memory was not recalled").toContain("PROOF1 clean memory IS recalled");
+    expect(out, "consolidation checkpoint not durable across restart").toContain("PROOF2 checkpoint DURABLE across reopen");
+  });
+});

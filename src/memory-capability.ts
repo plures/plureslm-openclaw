@@ -547,6 +547,20 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
     if (wroteAny) {
       store.linkRecent(syncStartEpoch);
     }
+
+    // Reactive consolidation sweep (P3, PULL/TICK — not push). The native has no
+    // on-write trigger, so we run the idempotent in-DB consolidation sweep
+    // opportunistically here on the SAME handle: forced when the caller forces a
+    // sync, otherwise interval-guarded by a DURABLE checkpoint so the lazy
+    // `reason:"search"` sync that fires before every search calls it for free
+    // (a cheap no-op when it ran < the min interval ago). `consolidate()` is
+    // best-effort and self-contained; it never throws out of `sync()`.
+    try {
+      store.consolidate({ force });
+    } catch {
+      // Consolidation is additive maintenance; a failure must never break the
+      // write/search contract.
+    }
   }
 
   // Shape matches `MemorySearchManager` (read surface + write `sync`).

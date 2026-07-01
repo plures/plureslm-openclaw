@@ -10,7 +10,15 @@ export type {
   RecallHit,
   StoreStatus,
   PluresLmStoreOptions,
+  SkipReason,
+  RefusedWrite,
+  StoreWriteResult,
+  ConsolidateResult,
 } from "./pluresdb.js";
+
+// Real secret detector backing the P4 governed-write gate (C-MEM-REDACT).
+export { detectSecret } from "./redact.js";
+export type { SecretFinding } from "./redact.js";
 
 // Test-only fixture seeder (routes through the same native binding resolver as
 // the read path). Exported here so the cross-process recall gate can import it
