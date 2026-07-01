@@ -1145,10 +1145,25 @@ export class PluresLmStore {
 
   /**
    * Read the durable consolidation checkpoint from the Agens reactive-state
-   * table (`agensStateGet`). Returns `{ lastRunEpoch, runs }` (zeros when no
-   * checkpoint exists yet). Never throws.
+   * table (`agensStateGet`). Returns the FULL persisted shape
+   * `{ lastRunEpoch, runs, edges, clusters, topRanked }` (zeros / empty array
+   * when no checkpoint exists yet). Never throws.
+   *
+   * P2-0 (reader fix): `#writeCheckpoint` persists `edges`, `clusters`, and the
+   * structural-salience `topRanked` ids alongside `lastRunEpoch`/`runs`, but
+   * this reader historically read back ONLY `lastRunEpoch`/`runs`, orphaning
+   * the persisted salience. We now read ALL persisted fields so salience that
+   * consolidate() COMPUTED + PERSISTED can actually be CONSUMED (by the
+   * salience-weighted recall sort). This ONLY reads what was persisted — it
+   * never recomputes pagerank at read time.
    */
-  #readCheckpoint(db: PluresDatabaseType): { lastRunEpoch: number; runs: number } {
+  #readCheckpoint(db: PluresDatabaseType): {
+    lastRunEpoch: number;
+    runs: number;
+    edges: number;
+    clusters: number;
+    topRanked: string[];
+  } {
     try {
       const raw = (
         db as unknown as { agensStateGet: (k: string) => unknown }
@@ -1157,12 +1172,34 @@ export class PluresLmStore {
         const o = raw as Record<string, unknown>;
         const lastRunEpoch = typeof o.lastRunEpoch === "number" ? o.lastRunEpoch : 0;
         const runs = typeof o.runs === "number" ? o.runs : 0;
-        return { lastRunEpoch, runs };
+        const edges = typeof o.edges === "number" ? o.edges : 0;
+        const clusters = typeof o.clusters === "number" ? o.clusters : 0;
+        // Persisted topRanked is a string[]; defensively filter to strings so a
+        // corrupt/legacy entry can never inject a non-string id downstream.
+        const topRanked = Array.isArray(o.topRanked)
+          ? o.topRanked.filter((x): x is string => typeof x === "string")
+          : [];
+        return { lastRunEpoch, runs, edges, clusters, topRanked };
       }
     } catch {
       /* no checkpoint / state table unavailable -> treat as never-run */
     }
-    return { lastRunEpoch: 0, runs: 0 };
+    return { lastRunEpoch: 0, runs: 0, edges: 0, clusters: 0, topRanked: [] };
+  }
+
+  /**
+   * Structural-salience accessor: the set of node ids that consolidate()
+   * ranked highest by PageRank and PERSISTED into the durable checkpoint
+   * (`topRanked`). Read-only pass-through to {@link #readCheckpoint} — it does
+   * NOT recompute pagerank; it returns exactly what the last sweep persisted.
+   *
+   * Empty set when no sweep has persisted salience yet (never-run, empty
+   * corpus, or a corpus with no edges → uniform/absent pagerank). An empty set
+   * makes the salience-weighted recall sort a NO-OP (byte-identical to the raw
+   * score sort), which is the required invariant.
+   */
+  #salientIds(db: PluresDatabaseType): Set<string> {
+    return new Set(this.#readCheckpoint(db).topRanked);
   }
 
   /** Count rows in an execIr `{ nodes }` result (0 on any non-array). */
