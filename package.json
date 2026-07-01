@@ -37,9 +37,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx test/recall.gate.mts",
+    "test": "tsx test/recall.gate.mts && tsx test/p3p4.gate.mts && tsx test/p3p4-hardened.gate.mts && tsx test/p3p4-qa.gate.mts && tsx test/p3p4-verify.driver.mts",
+    "test:recall": "tsx test/recall.gate.mts",
+    "test:p3p4": "tsx test/p3p4.gate.mts",
+    "test:p3p4-hardened": "tsx test/p3p4-hardened.gate.mts",
+    "test:p3p4-qa": "tsx test/p3p4-qa.gate.mts",
+    "test:p3p4-verify": "tsx test/p3p4-verify.driver.mts",
     "test:vitest": "vitest run",
-    "gate": "tsc -p tsconfig.json && tsx test/recall.gate.mts"
+    "gate": "tsc -p tsconfig.json && tsx test/recall.gate.mts && tsx test/p3p4.gate.mts"
   },
   "dependencies": {
     "@plures/pluresdb-native": "file:../pluresdb/crates/pluresdb-node"

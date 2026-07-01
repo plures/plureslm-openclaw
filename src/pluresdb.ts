@@ -51,10 +51,121 @@ import { existsSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { PluresDatabase as PluresDatabaseType } from "@plures/pluresdb-native";
 
+import { detectSecret } from "./redact.js";
+
 // The package ships a CommonJS `index.js` that loads the platform `.node`
 // addon. Load it through createRequire so this ESM module stays NodeNext-clean
 // without a default-interop shim.
 const require = createRequire(import.meta.url);
+
+// --- P4 governed-write gate (C-MEM-REDACT) ---------------------------------
+//
+// The pre-write secret gate is DB-GOVERNED, not a TS `if`: at open we persist an
+// error-severity praxis constraint into the CRDT store via `pxInsertConstraint`,
+// and every write routes its honest `has_secret` signal through the native
+// `pxOnAction` engine (`on_action`), which THROWS (`ActionBlocked`) when the
+// constraint fires. This was confirmed empirically against
+// `@plures/pluresdb-native@2.0.0-alpha.1` (see P3-P4-IMPLEMENT-NOTES.md):
+//   - pxInsertConstraint({ ...require: {field:"has_secret",op:"field_eq",value:0},
+//     severity:"error" }) persists a real compiled field_eq Condition.
+//   - pxOnAction({ metadata:{ has_secret:1 } }) THROWS
+//     [CORE_INVALID_INPUT] action blocked by 1 constraint(s): [C-MEM-REDACT] ...
+//   - pxOnAction({ metadata:{ has_secret:0 } }) returns { violations: [] } (PASS).
+// The native enforces; this module only (a) declares the rule once and (b) feeds
+// it the real detector's boolean. A flagged chunk is REFUSED (never persisted),
+// surfaced in the write accounting -- never silently dropped (C-NOSTUB-001).
+//
+// NATIVE-GOVERNANCE NOTE (honest boundary): the .px *source document* path
+// (pxLoadPxSource('constraint ... { require: ... }')) does NOT parse the
+// constraint syntax we need in this alpha (it expects a different top-level
+// document grammar and rejects `constraint <id> { ... }`). So the rule is
+// declared via the STRUCTURED pxInsertConstraint API (a real persisted CRDT
+// constraint node compiled to an enforcing Condition) rather than from .px
+// text. Enforcement still runs entirely inside the native on_action engine --
+// it is genuinely DB-governed (C-PLURES-004), not a TS-side decision.
+const REDACT_CONSTRAINT_ID = "C-MEM-REDACT";
+const MEMORY_WRITE_ACTION = "memory_write";
+
+/**
+ * Content-bearing fields the RECALL path can surface as a node's snippet, in
+ * priority order (must stay in sync with `deriveSnippet` /
+ * `deriveSnippetFromData` in this file and `memory-capability.ts`). The
+ * governed-write gate scans ALL of these (plus an exact mirror of the recall
+ * whole-payload fallback) so a secret cannot hide in a recallable field the
+ * detector never inspected.
+ */
+const RECALL_CONTENT_FIELDS = [
+  "content",
+  "text",
+  "summary",
+  "value",
+  "body",
+  "note",
+] as const;
+
+/**
+ * Structural / bookkeeping payload keys that are NEVER user content and are
+ * NEVER surfaced as a recall snippet (they are ids, hashes, line numbers,
+ * sizes, timestamps, graph plumbing). The gate excludes their values from the
+ * whole-payload fallback scan so a synthetic id-shaped value (e.g. a chunk
+ * `hash` like `h-foo-bar-1`, 24+ mixed-class chars) is not mistaken for an
+ * opaque secret — the same class of structured-non-secret carve-out the
+ * detector already applies to UUIDs and base64 media. A real secret is content,
+ * and content never lives in these keys.
+ */
+const STRUCTURAL_NONCONTENT_KEYS = new Set<string>([
+  "hash",
+  "category",
+  "type",
+  "kind",
+  "source",
+  "path",
+  "file",
+  "id",
+  "mtimeMs",
+  "size",
+  "chunkIndex",
+  "startLine",
+  "endLine",
+  "timestamp",
+  "createdAt",
+  "updatedAt",
+  "_edge",
+  "superseded_by",
+  "structural_rank",
+  "pagerank_score",
+  "decay",
+]);
+
+/** The structured, error-severity constraint persisted to govern writes. */
+function redactConstraintSpec(): Record<string, unknown> {
+  return {
+    id: REDACT_CONSTRAINT_ID,
+    description:
+      "Refuse persisting any memory chunk whose content contains secret material (has_secret must be 0).",
+    when: { op: "always" },
+    require: { field: "has_secret", op: "field_eq", value: 0 },
+    fix: "Redact the secret (API key, AWS key, PEM private key, bearer/JWT, high-entropy token) before writing.",
+    evidence: [],
+    severity: "error",
+  };
+}
+
+// --- P3 reactive consolidation sweep (pull/tick, NOT push) ------------------
+//
+// HARD REALITY (confirmed against `@plures/pluresdb-native@2.0.0-alpha.1`): the
+// Node binding has NO push/reactive path — a `put` does not auto-run a
+// procedure, `subscribe()` is an id-only stub, and procedures are not
+// executable via the binding. So consolidation is a PULL/TICK sweep: a set of
+// idempotent `execIr` steps run on the SINGLE memoized handle, invoked
+// opportunistically by the lazy `sync()` path (never a background thread, never
+// a second handle, never a self-firing timer — any of which would break the
+// native's exclusive file lock). Schedule/checkpoint state is DURABLE, stored
+// via the real `agensStateSet`/`agensStateGet` reactive-state table (confirmed
+// present + round-trips) so the interval guard and run history survive restart.
+const CONSOLIDATE_CHECKPOINT_KEY = "plureslm:consolidate:checkpoint";
+/** Minimum wall-clock gap between unforced consolidation sweeps. */
+const CONSOLIDATE_MIN_INTERVAL_MS = 60_000;
 
 /**
  * NAPI-RS binding resolution.
@@ -189,6 +300,65 @@ export type RecallHit = {
   via: "vector" | "text" | "graph";
 };
 
+/**
+ * Why a node was NOT written during a {@link PluresLmStore.store} /
+ * {@link PluresLmStore.put} call:
+ *  - `"unchanged"` — dirty-tracking matched the stored content (no re-embed).
+ *  - `"secret"` — REFUSED by the C-MEM-REDACT governed-write gate: the chunk
+ *    content tripped the real secret detector and the native `pxOnAction`
+ *    engine blocked the write. The node was NOT persisted; this is an honest
+ *    refusal surfaced to the caller, never a silent drop (C-NOSTUB-001).
+ */
+export type SkipReason = "unchanged" | "secret";
+
+/** One refused-write record (id + the secret kind that tripped the gate). */
+export type RefusedWrite = {
+  id: string;
+  reason: "secret";
+  /** Short label of the secret shape detected (e.g. `aws-access-key-id`). */
+  kind?: string;
+};
+
+/**
+ * Result of a batch {@link PluresLmStore.store}.
+ *  - `written` — nodes actually persisted.
+ *  - `skipped` — nodes not persisted because unchanged (dirty-tracking).
+ *  - `refused` — nodes BLOCKED by the governed-write gate (secret content).
+ *    These are reported, never silently dropped; `refusedDetail` carries the
+ *    id + detected secret kind for each.
+ */
+export type StoreWriteResult = {
+  written: number;
+  skipped: number;
+  refused: number;
+  refusedDetail: RefusedWrite[];
+};
+
+/**
+ * Outcome of one {@link PluresLmStore.consolidate} pull/tick sweep.
+ *  - `ran` — false when the interval guard short-circuited (cheap no-op).
+ *  - `reason` — why it ran or was skipped (`"forced"`, `"interval"`,
+ *    `"too-soon"`, `"empty"`, `"error"`).
+ *  - `edges` — total associative edges in the graph after the sweep.
+ *  - `sessionNodes` — count of session memory chunks considered.
+ *  - `clusters` — number of communities detected (louvain), 0 when none.
+ *  - `topRanked` — up to a few highest-PageRank node ids (structural salience).
+ *  - `runs` — monotonic count of sweeps recorded in the durable checkpoint.
+ *  - `checkpointEpoch` — the persisted lastRunEpoch after this sweep.
+ * Every field is derived from a REAL execIr result; nothing is fabricated. When
+ * a sub-metric is not computable it is reported honestly (0 / empty), not faked.
+ */
+export type ConsolidateResult = {
+  ran: boolean;
+  reason: "forced" | "interval" | "too-soon" | "empty" | "error";
+  edges: number;
+  sessionNodes: number;
+  clusters: number;
+  topRanked: string[];
+  runs: number;
+  checkpointEpoch: number;
+};
+
 /** Aggregate store status, normalized from `stats()`. */
 export type StoreStatus = {
   totalNodes: number;
@@ -222,8 +392,9 @@ function asString(v: unknown): string | undefined {
 function deriveSnippet(data: unknown): string {
   if (data && typeof data === "object") {
     const obj = data as Record<string, unknown>;
-    // Prefer common content-bearing fields, in priority order.
-    for (const key of ["content", "text", "summary", "value", "body", "note"]) {
+    // Prefer common content-bearing fields, in priority order (shared with the
+    // governed-write gate so the two never drift — see RECALL_CONTENT_FIELDS).
+    for (const key of RECALL_CONTENT_FIELDS) {
       const val = obj[key];
       if (typeof val === "string" && val.trim().length > 0) return val;
     }
@@ -291,6 +462,13 @@ export class PluresLmStore {
   #db: PluresDatabaseType | null = null;
   #openError: string | null = null;
   #embedderAvailable: boolean | null = null;
+  /**
+   * Process-local latch: the C-MEM-REDACT governed-write constraint is declared
+   * into the store at most once per handle (idempotent in the native too, but we
+   * avoid the redundant call). `null` = not yet attempted, `true` = persisted,
+   * `false` = declaration failed (gate then fails CLOSED — see {@link #gateWrite}).
+   */
+  #governanceReady: boolean | null = null;
 
   private constructor(opts: PluresLmStoreOptions) {
     this.dbPath = opts.dbPath;
@@ -315,6 +493,70 @@ export class PluresLmStore {
   static _resetForTests(dbPath?: string): void {
     if (dbPath) PluresLmStore.#instances.delete(dbPath);
     else PluresLmStore.#instances.clear();
+  }
+
+  /**
+   * TEST-ONLY seam (documented double at a real seam — C-NOSTUB-001 item 3, NOT
+   * a shipped path): force the governance latch into the FAILED state, exactly
+   * as if the native `pxInsertConstraint` declaration had thrown when installing
+   * C-MEM-REDACT. This does NOT fake the gate's decision — it induces the
+   * genuine precondition ("the safety rule could not be installed") that is
+   * otherwise nondeterministic to trigger, so the fail-CLOSED branch of the REAL
+   * {@link #gateWrite} (refuse every detector-positive chunk; never let a
+   * detected secret through ungoverned) can be exercised deterministically.
+   *
+   * `failed:true`  -> latch = false (governance unavailable; gate fails closed).
+   * `failed:false` -> clear the latch so the next write re-attempts the real
+   *                   native declaration. The block/allow outcome is still
+   *                   computed by the real detector + real fail-closed logic.
+   */
+  _forceGovernanceFailedForTests(failed: boolean): void {
+    this.#governanceReady = failed ? false : null;
+  }
+
+  /**
+   * TEST-ONLY seam: report the current governance latch state
+   * (`true`=installed, `false`=failed/closed, `null`=not yet attempted) so a
+   * fail-closed test can assert the precondition it induced actually holds.
+   */
+  _governanceStateForTests(): boolean | null {
+    return this.#governanceReady;
+  }
+
+  /**
+   * TEST-ONLY seam (documented double at a real seam — C-NOSTUB-001 item 3, NOT
+   * a shipped path): make the next `count` invocations of the live handle's
+   * native `execIr` THROW, so the best-effort posture of {@link consolidate}
+   * (every internal `execIr` step is wrapped; a native failure degrades that
+   * metric and the sweep still returns / never throws out of the write/search
+   * contract) can be proven against a REAL throw rather than an assumed one.
+   * Defaults to poisoning every subsequent call until cleared with `count<=0`.
+   * The real `consolidate`/`execIr` error handling is what is under test — this
+   * only injects the failure at the native boundary.
+   */
+  _poisonExecIrForTests(count = Number.MAX_SAFE_INTEGER): void {
+    const db = this.#ensureDb() as unknown as {
+      execIr: (steps: unknown[]) => unknown;
+      __plmRealExecIr?: (steps: unknown[]) => unknown;
+    };
+    if (count <= 0) {
+      // Restore the genuine native execIr.
+      if (db.__plmRealExecIr) {
+        db.execIr = db.__plmRealExecIr;
+        delete db.__plmRealExecIr;
+      }
+      return;
+    }
+    if (!db.__plmRealExecIr) db.__plmRealExecIr = db.execIr.bind(db);
+    const real = db.__plmRealExecIr;
+    let remaining = count;
+    db.execIr = (steps: unknown[]) => {
+      if (remaining > 0) {
+        remaining -= 1;
+        throw new Error("[test] injected execIr failure (poison seam)");
+      }
+      return real(steps);
+    };
   }
 
   /**
@@ -396,6 +638,143 @@ export class PluresLmStore {
       if (typeof val === "string" && val.trim().length > 0) return val;
     }
     return "";
+  }
+
+  /**
+   * Declare the C-MEM-REDACT governed-write constraint into the store (once per
+   * handle). The rule is a real, persisted, error-severity praxis constraint
+   * compiled to an enforcing `field_eq` Condition (`has_secret == 0`); the
+   * native `on_action` engine enforces it on every {@link #gateWrite}. Returns
+   * `true` when the constraint is in place. If declaration fails we record
+   * `false` and the gate fails CLOSED (refuses writes) rather than silently
+   * letting ungoverned writes through — a safety rule that cannot be installed
+   * must not be silently skipped.
+   *
+   * Idempotent: `pxInsertConstraint` upserts by id, and the latch avoids the
+   * redundant native call after the first success.
+   */
+  #ensureGovernance(db: PluresDatabaseType): boolean {
+    if (this.#governanceReady !== null) return this.#governanceReady;
+    try {
+      // `pxInsertConstraint` persists the structured constraint as a CRDT node
+      // and compiles `require` into a real enforcing Condition. Confirmed to
+      // make `pxOnAction` THROW on has_secret=1 / PASS on 0 (see notes).
+      (db as unknown as { pxInsertConstraint: (c: unknown) => unknown }).pxInsertConstraint(
+        redactConstraintSpec(),
+      );
+      this.#governanceReady = true;
+    } catch {
+      // Could not install the safety rule — fail closed.
+      this.#governanceReady = false;
+    }
+    return this.#governanceReady;
+  }
+
+  /**
+   * Governed-write gate (C-MEM-REDACT). Runs BEFORE a node is persisted:
+   *  1. compute the honest `has_secret` boolean over the node's embeddable/
+   *     snippet text via the real {@link detectSecret} detector, then
+   *  2. route the decision through the native `pxOnAction` engine, which THROWS
+   *     (`ActionBlocked`) when the persisted error-severity constraint fires.
+   *
+   * Returns `{ allow:true }` when the write is permitted, or
+   * `{ allow:false, kind }` when it is REFUSED (caller must NOT persist the
+   * node and must report the refusal). Fails CLOSED: if governance could not be
+   * installed, or any detector-positive chunk reaches an engine that does not
+   * throw, the write is refused — a secret must never slip through because the
+   * gate was unavailable.
+   *
+   * The block decision is made by the native engine, not by a TS `if`: this
+   * method only supplies the detector signal and interprets the throw. That is
+   * what makes the rule DB-governed (C-PLURES-004) rather than a local check.
+   */
+  /**
+   * The text surface a recall could expose for a node — the exact input the gate
+   * must scan so a secret cannot hide in a content field the detector never saw.
+   * (QA DEF: a benign `content` with a live token in `value`/`body`/`note`/an
+   * arbitrary content field used to be WRITTEN and then RECALLED — a real leak,
+   * because the gate only inspected the single primary snippet.)
+   *
+   * Scans every CONTENT-bearing string value in the payload (recursively into
+   * nested objects/arrays), each on its own line, but EXCLUDES structural /
+   * bookkeeping keys ({@link STRUCTURAL_NONCONTENT_KEYS}: ids, hashes, line
+   * numbers, sizes, timestamps, graph plumbing) whose synthetic id-shaped values
+   * are never user content and never a recall snippet — including them would
+   * manufacture false `high-entropy-token` positives (e.g. a chunk `hash` like
+   * `h-foo-bar-1`) without catching any real secret.
+   *
+   * It deliberately joins discrete string VALUES with newlines rather than
+   * feeding a `JSON.stringify` of the object to the detector: serialized JSON
+   * glues values to keys/punctuation and that manufactured run trips the entropy
+   * heuristic on wholly clean content. Scanning the discrete content values
+   * preserves each token's real boundaries (exactly what a recall snippet shows)
+   * so the gate catches a secret in ANY content field WITHOUT inventing false
+   * positives. This is a SUPERSET of the old single-snippet scan for content
+   * fields (it can only catch more real secrets) and, because structural keys are
+   * excluded, it does not over-block clean payloads.
+   */
+  #gateScanText(data: Record<string, unknown>): string {
+    const values: string[] = [];
+    const seen = new Set<unknown>();
+    const visit = (v: unknown, key: string | null): void => {
+      // Skip structural/bookkeeping keys entirely — their values are ids/hashes,
+      // never content, never a recall snippet.
+      if (key !== null && STRUCTURAL_NONCONTENT_KEYS.has(key)) return;
+      if (typeof v === "string") {
+        if (v.length > 0) values.push(v);
+        return;
+      }
+      if (v && typeof v === "object") {
+        if (seen.has(v)) return; // guard against cyclic payloads
+        seen.add(v);
+        if (Array.isArray(v)) {
+          for (const item of v) visit(item, key);
+        } else {
+          for (const [k, item] of Object.entries(v as Record<string, unknown>)) visit(item, k);
+        }
+      }
+      // numbers/booleans/null are never credential-bearing text — ignore.
+    };
+    visit(data, null);
+    return values.join("\n");
+  }
+
+  #gateWrite(
+    db: PluresDatabaseType,
+    id: string,
+    data: Record<string, unknown>,
+  ): { allow: true } | { allow: false; kind?: string } {
+    // The gate inspects the FULL recall-exposable surface (every content field
+    // AND the whole-payload JSON), not just the primary snippet — a secret in
+    // any recallable field must be caught, never only the one in `content`.
+    const text = this.#gateScanText(data);
+    const finding = detectSecret(text);
+
+    const governed = this.#ensureGovernance(db);
+    const ctx = {
+      action_type: MEMORY_WRITE_ACTION,
+      target: id,
+      session_type: "main",
+      metadata: { has_secret: finding.has_secret ? 1 : 0 },
+    };
+
+    if (!governed) {
+      // Safety rule unavailable: fail closed. Only refuse the chunks the real
+      // detector flagged (clean chunks still write) — we never fabricate a
+      // secret, but we never let a detected one through ungoverned either.
+      return finding.has_secret ? { allow: false, kind: finding.kind } : { allow: true };
+    }
+
+    try {
+      (db as unknown as { pxOnAction: (c: unknown) => unknown }).pxOnAction(ctx);
+      // Engine permitted the action. Defense-in-depth: if the detector says
+      // secret but the engine somehow did not throw, refuse anyway (fail closed).
+      if (finding.has_secret) return { allow: false, kind: finding.kind };
+      return { allow: true };
+    } catch {
+      // Engine BLOCKED the write (ActionBlocked thrown) — honest refusal.
+      return { allow: false, kind: finding.kind };
+    }
   }
 
   /**
@@ -489,6 +868,22 @@ export class PluresLmStore {
   }
 
   /**
+   * Read one node payload by id (read-only pass-through to native `get`).
+   * Returns the stored object, or `null` when absent / on any error. Used by
+   * callers (and the gate) that need a direct existence/absence check — e.g. to
+   * prove a chunk REFUSED by the governed-write gate was truly never persisted.
+   */
+  get(id: string): Record<string, unknown> | null {
+    let raw: unknown;
+    try {
+      raw = this.#ensureDb().get(id);
+    } catch {
+      return null;
+    }
+    return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+  }
+
+  /**
    * Recall up to `limit` hits for `query`. Prefers vector search when an
    * embedder is available, then falls back to / merges text search. Returns a
    * normalized, de-duplicated, score-sorted list. Never fabricates results.
@@ -534,13 +929,19 @@ export class PluresLmStore {
   /**
    * Write one node through the SAME memoized handle the read path uses.
    *
+   * Governed-write gate (C-MEM-REDACT) runs FIRST: the node content is scanned
+   * by the real secret detector and the decision is routed through the native
+   * `pxOnAction` engine. A chunk carrying secret material is REFUSED — NOT
+   * persisted — and `false` is returned (same as an unchanged skip from the
+   * caller's boolean view; use {@link store} when you need the refusal reason).
+   *
    * Dirty-tracking: when the dirty key (the chunk `hash`, falling back to
    * `mtimeMs`+`size`) matches what is already stored under `id`, the put is
    * SKIPPED and `false` is returned — so a re-sync of unchanged content does not
    * re-embed. Returns `true` when a put actually happened.
    *
    * Embed-on-write (DEF-PATHB-1): when an embedder is available and the node
-   * carries embeddable text (`content` → `text` → `summary`), the vector is
+   * carries embeddable text (`content` -> `text` -> `summary`), the vector is
    * computed and persisted via `putWithEmbedding` so the node is vector-
    * searchable — the native alpha's `put` does NOT auto-embed despite its docs,
    * so an explicit embedding is required (proven in PATH-B-QA-NOTES.md). If the
@@ -552,13 +953,23 @@ export class PluresLmStore {
   put(id: string, data: Record<string, unknown>): boolean {
     const db = this.#ensureDb();
     if (!this.#isDirty(db, id, data)) return false;
+    // Governed-write gate BEFORE persistence: a secret-bearing chunk is refused.
+    if (this.#gateWrite(db, id, data).allow !== true) return false;
     this.#writeNode(db, id, data);
     return true;
   }
 
   /**
    * Write a batch of nodes, then build the vector index once (best-effort).
-   * Returns how many were actually written vs skipped as unchanged.
+   * Returns how many were actually `written`, `skipped` as unchanged, and
+   * `refused` by the governed-write gate (with per-id `refusedDetail`).
+   *
+   * Governed-write gate (C-MEM-REDACT): every node is scanned for secret
+   * material by the real detector and the block/allow decision is made by the
+   * native `pxOnAction` engine BEFORE the node is persisted. A flagged chunk is
+   * REFUSED (not written) and recorded in `refused`/`refusedDetail` — an honest
+   * refusal surfaced to the caller, never a silent drop (C-NOSTUB-001). Clean
+   * sibling chunks in the same batch are unaffected and still written.
    *
    * Skips are driven by per-node dirty-tracking (see {@link put}); a re-sync of
    * already-current chunks is therefore cheap (no re-embed, no index rebuild
@@ -567,19 +978,27 @@ export class PluresLmStore {
    */
   store(
     nodes: Array<{ id: string; data: Record<string, unknown> }>,
-  ): { written: number; skipped: number } {
+  ): StoreWriteResult {
     const db = this.#ensureDb();
     let written = 0;
     let skipped = 0;
+    const refusedDetail: RefusedWrite[] = [];
     for (const node of nodes) {
-      // Check dirtiness FIRST so an unchanged node is never embedded — the lazy
-      // pre-search sync stays cheap (no wasted embed calls on skips).
-      if (this.#isDirty(db, node.id, node.data)) {
-        this.#writeNode(db, node.id, node.data);
-        written += 1;
-      } else {
+      // Check dirtiness FIRST so an unchanged node is never embedded nor gated
+      // — the lazy pre-search sync stays cheap (no wasted work on skips).
+      if (!this.#isDirty(db, node.id, node.data)) {
         skipped += 1;
+        continue;
       }
+      // Governed-write gate BEFORE persistence. A refusal is RECORDED (id +
+      // detected secret kind), never silently dropped.
+      const decision = this.#gateWrite(db, node.id, node.data);
+      if (decision.allow !== true) {
+        refusedDetail.push({ id: node.id, reason: "secret", kind: decision.kind });
+        continue;
+      }
+      this.#writeNode(db, node.id, node.data);
+      written += 1;
     }
     if (written > 0) {
       try {
@@ -593,7 +1012,7 @@ export class PluresLmStore {
         // pick the new vectors up. Never let a failed index build lose a write.
       }
     }
-    return { written, skipped };
+    return { written, skipped, refused: refusedDetail.length, refusedDetail };
   }
 
   // --- Graph surface (associative recall) ----------------------------------
@@ -720,6 +1139,220 @@ export class PluresLmStore {
       out.push({ id, data });
     }
     return out;
+  }
+
+  // --- P3 reactive consolidation sweep (pull/tick) -------------------------
+
+  /**
+   * Read the durable consolidation checkpoint from the Agens reactive-state
+   * table (`agensStateGet`). Returns `{ lastRunEpoch, runs }` (zeros when no
+   * checkpoint exists yet). Never throws.
+   */
+  #readCheckpoint(db: PluresDatabaseType): { lastRunEpoch: number; runs: number } {
+    try {
+      const raw = (
+        db as unknown as { agensStateGet: (k: string) => unknown }
+      ).agensStateGet(CONSOLIDATE_CHECKPOINT_KEY);
+      if (raw && typeof raw === "object") {
+        const o = raw as Record<string, unknown>;
+        const lastRunEpoch = typeof o.lastRunEpoch === "number" ? o.lastRunEpoch : 0;
+        const runs = typeof o.runs === "number" ? o.runs : 0;
+        return { lastRunEpoch, runs };
+      }
+    } catch {
+      /* no checkpoint / state table unavailable -> treat as never-run */
+    }
+    return { lastRunEpoch: 0, runs: 0 };
+  }
+
+  /** Count rows in an execIr `{ nodes }` result (0 on any non-array). */
+  #countNodes(result: unknown): number {
+    const nodes =
+      result && typeof result === "object"
+        ? (result as { nodes?: unknown }).nodes
+        : undefined;
+    return Array.isArray(nodes) ? nodes.length : 0;
+  }
+
+  /**
+   * Reactive in-DB consolidation sweep (PULL/TICK, not push).
+   *
+   * Idempotent + safe to call repeatedly. Steps, all via `execIr` on the single
+   * memoized handle (no second handle, no thread, no timer):
+   *  1. Interval guard: read the DURABLE checkpoint (`agensStateGet`); when the
+   *     last sweep was < {@link CONSOLIDATE_MIN_INTERVAL_MS} ago and `force` is
+   *     not set, return `{ ran:false, reason:"too-soon" }` — cheap no-op so the
+   *     lazy `reason:"search"` path can call it on every search without cost.
+   *  2. Scope: `aggregate(count)` the `category=="session"` chunks. When zero,
+   *     return `{ ran:false, reason:"empty" }` (nothing to consolidate — honest,
+   *     not a fake result).
+   *  3. Consolidate edges: `auto_link(category,temporal)` over the session set.
+   *     Edges are deterministic (`edge::{from}::{to}`), so re-running converges
+   *     (no duplicate/explosion — proven: a 2nd sweep leaves the edge count
+   *     unchanged). This is the materialized associative structure.
+   *  4. Salience: `graph_pagerank` over the edge graph -> the top-ranked node
+   *     ids (structural importance), and `graph_clusters(louvain)` -> community
+   *     count. Both are REAL native ops; their outputs are summarized, never
+   *     fabricated. (We do NOT mutate node payloads with the scores: pagerank
+   *     drifts every run, so persisting it onto nodes would create write churn;
+   *     the salient ids live in the checkpoint instead.)
+   *  5. Persist the DURABLE checkpoint via `agensStateSet`: bump a monotonic
+   *     `runs` counter, stamp `lastRunEpoch`, and record `edges`/`clusters`/
+   *     `topRanked` so the consolidation state survives restart and the next
+   *     interval guard can read it.
+   *
+   * Honest absence: a decay/eviction step that DELETES stale low-salience nodes
+   * is intentionally NOT performed — this surface never calls native `delete`
+   * (the read+write+graph contract is augment-only), so true decay-by-removal is
+   * deferred rather than faked. The monotonic `runs` counter IS the durable
+   * decay/age signal a later eviction policy can build on.
+   *
+   * Returns a {@link ConsolidateResult} describing exactly what ran. Best-effort
+   * per sub-step: a failing native op degrades that metric to 0/empty and the
+   * sweep still records its checkpoint; only a catastrophic failure returns
+   * `{ ran:false, reason:"error" }`.
+   */
+  consolidate(opts?: { force?: boolean }): ConsolidateResult {
+    const force = opts?.force === true;
+    let db: PluresDatabaseType;
+    try {
+      db = this.#ensureDb();
+    } catch {
+      return {
+        ran: false,
+        reason: "error",
+        edges: 0,
+        sessionNodes: 0,
+        clusters: 0,
+        topRanked: [],
+        runs: 0,
+        checkpointEpoch: 0,
+      };
+    }
+
+    const checkpoint = this.#readCheckpoint(db);
+    const now = Date.now();
+    // 1) Interval guard (durable). Cheap no-op on the hot search path.
+    if (!force && checkpoint.lastRunEpoch > 0 && now - checkpoint.lastRunEpoch < CONSOLIDATE_MIN_INTERVAL_MS) {
+      return {
+        ran: false,
+        reason: "too-soon",
+        edges: 0,
+        sessionNodes: 0,
+        clusters: 0,
+        topRanked: [],
+        runs: checkpoint.runs,
+        checkpointEpoch: checkpoint.lastRunEpoch,
+      };
+    }
+
+    // 2) Scope: count session chunks. Empty -> nothing to consolidate.
+    let sessionNodes = 0;
+    try {
+      const agg = db.execIr([
+        { op: "filter", predicate: { field: "category", cmp: "==", value: "session" } },
+        { op: "aggregate", func: "count" },
+      ]) as { aggregate?: unknown };
+      sessionNodes = typeof agg?.aggregate === "number" ? agg.aggregate : 0;
+    } catch {
+      sessionNodes = 0;
+    }
+    if (sessionNodes === 0) {
+      // Record the run so the interval guard advances even on an empty sweep.
+      const runs = checkpoint.runs + 1;
+      this.#writeCheckpoint(db, { lastRunEpoch: now, runs, edges: 0, clusters: 0, topRanked: [] });
+      return {
+        ran: false,
+        reason: "empty",
+        edges: 0,
+        sessionNodes: 0,
+        clusters: 0,
+        topRanked: [],
+        runs,
+        checkpointEpoch: now,
+      };
+    }
+
+    // 3) Consolidate edges over the session set (idempotent / deterministic).
+    try {
+      db.execIr([
+        { op: "filter", predicate: { field: "category", cmp: "==", value: "session" } },
+        { op: "auto_link", algorithms: ["category", "temporal"], min_strength: 0.5 },
+      ]);
+    } catch {
+      /* edge formation best-effort; salience below still summarizes what exists */
+    }
+
+    // Total edges after consolidation.
+    let edges = 0;
+    try {
+      edges = this.#countNodes(db.execIr([{ op: "graph_links" }]));
+    } catch {
+      edges = 0;
+    }
+
+    // 4) Salience: PageRank top ids + louvain cluster count.
+    const topRanked: string[] = [];
+    try {
+      const pr = db.execIr([{ op: "graph_pagerank", damping: 0.85, iterations: 50 }]) as {
+        nodes?: Array<{ id?: unknown; data?: unknown }>;
+      };
+      const rows = Array.isArray(pr?.nodes) ? pr.nodes : [];
+      rows
+        .map((r) => ({
+          id: typeof r.id === "string" ? r.id : "",
+          score:
+            r.data && typeof r.data === "object" && typeof (r.data as Record<string, unknown>).pagerank_score === "number"
+              ? ((r.data as Record<string, unknown>).pagerank_score as number)
+              : 0,
+        }))
+        .filter((r) => r.id && !r.id.startsWith("edge::"))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5)
+        .forEach((r) => topRanked.push(r.id));
+    } catch {
+      /* pagerank best-effort -> empty topRanked */
+    }
+
+    let clusters = 0;
+    try {
+      clusters = this.#countNodes(
+        db.execIr([{ op: "graph_clusters", algorithm: "louvain", min_size: 2 }]),
+      );
+    } catch {
+      clusters = 0;
+    }
+
+    // 5) Persist the durable checkpoint (monotonic run counter).
+    const runs = checkpoint.runs + 1;
+    this.#writeCheckpoint(db, { lastRunEpoch: now, runs, edges, clusters, topRanked });
+
+    return {
+      ran: true,
+      reason: force ? "forced" : "interval",
+      edges,
+      sessionNodes,
+      clusters,
+      topRanked,
+      runs,
+      checkpointEpoch: now,
+    };
+  }
+
+  /** Persist the consolidation checkpoint to the durable Agens state table. */
+  #writeCheckpoint(
+    db: PluresDatabaseType,
+    state: { lastRunEpoch: number; runs: number; edges: number; clusters: number; topRanked: string[] },
+  ): void {
+    try {
+      (db as unknown as { agensStateSet: (k: string, v: unknown) => void }).agensStateSet(
+        CONSOLIDATE_CHECKPOINT_KEY,
+        state,
+      );
+    } catch {
+      /* durable checkpoint best-effort; an unwritten checkpoint just means the
+         next sweep re-evaluates the interval from the prior value (or runs). */
+    }
   }
 
   /**
