@@ -168,6 +168,24 @@ const CONSOLIDATE_CHECKPOINT_KEY = "plureslm:consolidate:checkpoint";
 const CONSOLIDATE_MIN_INTERVAL_MS = 60_000;
 
 /**
+ * Salience-weighted recall: fractional bonus applied to a direct hit's score
+ * when that hit's node id is in the persisted structural-salience set
+ * (`topRanked`, the top PageRank ids from the last consolidation sweep).
+ *
+ * Effective score = `score + SALIENCE_BONUS * score * (isSalient ? 1 : 0)`.
+ * The bonus is PROPORTIONAL to the hit's own score (not additive-flat) and
+ * deliberately SMALL (15%): PageRank measures graph CENTRALITY, not semantic
+ * relevance, so a salient node is not necessarily the most relevant one. A
+ * small proportional nudge lets salience break near-ties in favor of
+ * structurally-important memories WITHOUT letting a weakly-matching-but-central
+ * node leapfrog a strong direct hit — protecting P1 recall precision. When the
+ * salient set is EMPTY (never consolidated / no edges → uniform pagerank), the
+ * bonus term is 0 for every hit, so the sort is byte-identical to a raw score
+ * sort (the required no-op invariant).
+ */
+const SALIENCE_BONUS = 0.15;
+
+/**
  * NAPI-RS binding resolution.
  *
  * `@plures/pluresdb-native` is consumed as a local (`file:`) dependency and its
@@ -886,7 +904,19 @@ export class PluresLmStore {
   /**
    * Recall up to `limit` hits for `query`. Prefers vector search when an
    * embedder is available, then falls back to / merges text search. Returns a
-   * normalized, de-duplicated, score-sorted list. Never fabricates results.
+   * normalized, de-duplicated list sorted by EFFECTIVE score. Never fabricates
+   * results.
+   *
+   * Salience-weighted ordering (P2): direct hits whose id is in the persisted
+   * structural-salience set ({@link #salientIds}, the last sweep's top-PageRank
+   * ids) get a small PROPORTIONAL bonus ({@link SALIENCE_BONUS}) so that, among
+   * comparably-similar candidates, structurally-important memories surface
+   * first. The raw `hit.score` is NOT mutated — only the sort key is the
+   * effective score. When the salient set is empty (never consolidated / no
+   * edges) the bonus is 0 everywhere, so ordering is byte-identical to the raw
+   * score sort. Graph-expansion (`via:"graph"`) hits are appended DOWNSTREAM in
+   * the search manager AFTER these direct hits, so the P1 precision guardrail
+   * (a graph neighbor never displaces a direct top-1) is unaffected here.
    */
   recall(query: string, limit?: number): RecallHit[] {
     const db = this.#ensureDb();
@@ -923,7 +953,17 @@ export class PluresLmStore {
       }
     }
 
-    return [...byId.values()].sort((a, b) => b.score - a.score).slice(0, k);
+    // Salience-weighted ordering. Read the persisted structural-salience set
+    // ONCE (from the durable checkpoint via the memoized handle — no pagerank
+    // recompute). eff(hit) = score + SALIENCE_BONUS*score when the hit is
+    // salient, else eff == score. INVARIANT: an empty salient set makes eff
+    // == score for every hit, so this reduces to the prior raw-score sort
+    // byte-for-byte. We do NOT mutate hit.score; only the sort key differs, and
+    // ties (equal eff) preserve prior relative order (stable sort).
+    const salient = this.#salientIds(db);
+    const eff = (h: RecallHit): number =>
+      h.score + SALIENCE_BONUS * h.score * (salient.has(h.id) ? 1 : 0);
+    return [...byId.values()].sort((a, b) => eff(b) - eff(a)).slice(0, k);
   }
 
   /**
@@ -1145,10 +1185,25 @@ export class PluresLmStore {
 
   /**
    * Read the durable consolidation checkpoint from the Agens reactive-state
-   * table (`agensStateGet`). Returns `{ lastRunEpoch, runs }` (zeros when no
-   * checkpoint exists yet). Never throws.
+   * table (`agensStateGet`). Returns the FULL persisted shape
+   * `{ lastRunEpoch, runs, edges, clusters, topRanked }` (zeros / empty array
+   * when no checkpoint exists yet). Never throws.
+   *
+   * P2-0 (reader fix): `#writeCheckpoint` persists `edges`, `clusters`, and the
+   * structural-salience `topRanked` ids alongside `lastRunEpoch`/`runs`, but
+   * this reader historically read back ONLY `lastRunEpoch`/`runs`, orphaning
+   * the persisted salience. We now read ALL persisted fields so salience that
+   * consolidate() COMPUTED + PERSISTED can actually be CONSUMED (by the
+   * salience-weighted recall sort). This ONLY reads what was persisted — it
+   * never recomputes pagerank at read time.
    */
-  #readCheckpoint(db: PluresDatabaseType): { lastRunEpoch: number; runs: number } {
+  #readCheckpoint(db: PluresDatabaseType): {
+    lastRunEpoch: number;
+    runs: number;
+    edges: number;
+    clusters: number;
+    topRanked: string[];
+  } {
     try {
       const raw = (
         db as unknown as { agensStateGet: (k: string) => unknown }
@@ -1157,12 +1212,34 @@ export class PluresLmStore {
         const o = raw as Record<string, unknown>;
         const lastRunEpoch = typeof o.lastRunEpoch === "number" ? o.lastRunEpoch : 0;
         const runs = typeof o.runs === "number" ? o.runs : 0;
-        return { lastRunEpoch, runs };
+        const edges = typeof o.edges === "number" ? o.edges : 0;
+        const clusters = typeof o.clusters === "number" ? o.clusters : 0;
+        // Persisted topRanked is a string[]; defensively filter to strings so a
+        // corrupt/legacy entry can never inject a non-string id downstream.
+        const topRanked = Array.isArray(o.topRanked)
+          ? o.topRanked.filter((x): x is string => typeof x === "string")
+          : [];
+        return { lastRunEpoch, runs, edges, clusters, topRanked };
       }
     } catch {
       /* no checkpoint / state table unavailable -> treat as never-run */
     }
-    return { lastRunEpoch: 0, runs: 0 };
+    return { lastRunEpoch: 0, runs: 0, edges: 0, clusters: 0, topRanked: [] };
+  }
+
+  /**
+   * Structural-salience accessor: the set of node ids that consolidate()
+   * ranked highest by PageRank and PERSISTED into the durable checkpoint
+   * (`topRanked`). Read-only pass-through to {@link #readCheckpoint} — it does
+   * NOT recompute pagerank; it returns exactly what the last sweep persisted.
+   *
+   * Empty set when no sweep has persisted salience yet (never-run, empty
+   * corpus, or a corpus with no edges → uniform/absent pagerank). An empty set
+   * makes the salience-weighted recall sort a NO-OP (byte-identical to the raw
+   * score sort), which is the required invariant.
+   */
+  #salientIds(db: PluresDatabaseType): Set<string> {
+    return new Set(this.#readCheckpoint(db).topRanked);
   }
 
   /** Count rows in an execIr `{ nodes }` result (0 on any non-array). */
