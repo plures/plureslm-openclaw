@@ -902,9 +902,26 @@ export class PluresLmStore {
    * helper does NOT re-check dirtiness, so a node that will be skipped is never
    * embedded.
    */
-  #writeNode(db: PluresDatabaseType, id: string, data: Record<string, unknown>): void {
+  /**
+   * @param embedText Optional override for the text to embed. When supplied it
+   * is embedded INSTEAD of deriving the text from `data` via
+   * {@link #embeddableText}. This is how the write path preserves full
+   * findability under headroom compression: the caller embeds the ORIGINAL
+   * (pre-compression) body while `data` already holds the COMPRESSED body to
+   * persist. When omitted, behavior is unchanged (embed from `data`).
+   */
+  #writeNode(
+    db: PluresDatabaseType,
+    id: string,
+    data: Record<string, unknown>,
+    embedText?: string,
+  ): void {
     if (this.#embedderAvailable === true) {
-      const vec = this.#embedForWrite(db, this.#embeddableText(data));
+      const text =
+        typeof embedText === "string" && embedText.trim().length > 0
+          ? embedText
+          : this.#embeddableText(data);
+      const vec = this.#embedForWrite(db, text);
       if (vec) {
         db.putWithEmbedding(id, data, vec);
         return;
@@ -1183,14 +1200,23 @@ export class PluresLmStore {
         refusedDetail.push({ id: node.id, reason: "secret", kind: decision.kind });
         continue;
       }
-      // Headroom compression AFTER the gate (clean bodies only), BEFORE the
-      // write, so the embedded vector + persisted body reflect the same text.
+      // Capture the FULL embeddable text BEFORE compression so the vector is
+      // built from the original note. Headroom then compresses the persisted
+      // body (below), but recall stays complete: the embedding always sees the
+      // whole content regardless of how aggressively the stored body shrinks.
+      // This decouples storage compaction from findability (fix for the prior
+      // "embed the compressed body" behavior that dropped mid-note terms from
+      // the vector at aggressive floors).
+      const embedText = this.#embeddableText(node.data);
+      // Headroom compression AFTER the gate (clean bodies only) and AFTER the
+      // embed-text snapshot, BEFORE the write: the persisted body is compacted
+      // while the vector reflects the original text.
       const saved = this.#maybeCompress(node.data);
       if (saved > 0) {
         compressed += 1;
         tokensSaved += saved;
       }
-      this.#writeNode(db, node.id, node.data);
+      this.#writeNode(db, node.id, node.data, embedText);
       written += 1;
     }
     if (written > 0) {
