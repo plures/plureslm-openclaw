@@ -111,6 +111,21 @@ const CLEAN_CASES: Case[] = [
     text: "CLNRUN06 the kraken deploy runbook lives in the wiki; step one is to drain the node, step two is to roll the canary, step three is to watch the dashboards." },
   { label: "version-and-uuid", expectSecret: false, sentinel: "CLNVER07",
     text: "CLNVER07 we shipped v2.0.0-alpha.1 with trace id 123e4567-e89b-12d3-a456-426614174000 recorded in the incident timeline" },
+  // --- Real-world memory-prose false positives (regression lock for the entropy
+  // fallback carve-out: file paths, PascalCase method names, CLI flags, kebab/
+  // snake identifiers, namespaced slugs). These EXACT shapes flagged 424/1692
+  // memory chunks (25%) before the looksLikePathOrIdentifier carve-out; each must
+  // now be CLEAN. A regression here reintroduces silent memory loss on ingest. ---
+  { label: "fp-file-paths", expectSecret: false, sentinel: "CLNPTH08",
+    text: "CLNPTH08 the fix touched scripts/bicep/azure-pipelines and pares-radix/crates/config-mgmt/ and praxis/expectations/C-NOSTUB-001-no-stubs per the memory log" },
+  { label: "fp-pascalcase-methods", expectSecret: false, sentinel: "CLNPAS09",
+    text: "CLNPAS09 the HCI runbook calls Repair-ClusterNameAccount then Set-VMNetworkAdapterVlan and a ValidatePeerReviewPolicyFunction guard, none of which are secrets" },
+  { label: "fp-cli-flags-and-env", expectSecret: false, sentinel: "CLNCLI10",
+    text: "CLNCLI10 launch with --remote-debugging-port=9222 and NODE_OPTIONS=--max-old-space-size=12288 and ansibleTags=user_accounts as documented" },
+  { label: "fp-kebab-identifiers", expectSecret: false, sentinel: "CLNKEB11",
+    text: "CLNKEB11 the praxis-constraint-enforce and praxis-evidence-invalidate and memory/MEMORY-archive-2026-05-11 identifiers are structural names, not credentials" },
+  { label: "fp-namespaced-slugs", expectSecret: false, sentinel: "CLNNSP12",
+    text: "CLNNSP12 see AzureStackHCI/virtualMachineInstances and DialtoneCoreServices/scripts and com/plures/superlocalmemory/issues/1 for the tracking references" },
 ];
 
 // Filler so a single paragraph EXCEEDS the chunker's ~2000-char cap and stands

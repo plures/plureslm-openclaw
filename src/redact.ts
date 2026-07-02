@@ -110,6 +110,82 @@ function shannonEntropy(s: string): number {
 }
 
 /**
+ * Structural carve-out for the entropy fallback: is `token` a delimited file
+ * PATH or a multi-segment compound IDENTIFIER (rather than an opaque credential)?
+ *
+ * Opaque secrets are contiguous high-entropy runs. The tokenizer (`TOKEN_RE`)
+ * intentionally includes `/ - _ =` so it can catch base64/url-safe key material,
+ * but that also slurps whole file paths and kebab/snake identifiers out of prose
+ * into one long "token". Those are the dominant entropy false positives on real
+ * markdown memory. This predicate identifies them precisely:
+ *  - contains a `/` (a path or namespaced slug like `a/b/c` — no credential shape
+ *    embeds path separators; the named GitHub/Stripe/AWS/PEM patterns run first),
+ *    OR
+ *  - is a run of >= 3 segments joined by single `-`/`_` delimiters where the
+ *    segments are word-ish (letters, optionally with digits/dates), e.g.
+ *    `Repair-ClusterNameAccount`, `MEMORY-archive-2026-05-11`, `check-ado-access`.
+ *
+ * A real opaque secret is a single unbroken segment, so it fails both tests and
+ * still reaches the entropy check. This narrows false positives without relaxing
+ * the entropy thresholds or touching the high-confidence structured patterns.
+ */
+function looksLikePathOrIdentifier(token: string): boolean {
+  // Path / namespaced slug: any `/` separator (leading, interior, or trailing).
+  // A credential shape never contains path separators; the named GitHub/Stripe/
+  // AWS/PEM patterns run first, so exempting anything with `/` is safe.
+  if (token.includes("/")) return true;
+  // CLI flag or KEY=VALUE assignment shape (`--remote-debugging-port=9222`,
+  // `NODE_OPTIONS=--max-old-space-size=12288`, `ansibleTags=user_accounts`): the
+  // `=`/`--` structure is configuration syntax, never a bare opaque credential.
+  // (A real assigned secret is caught earlier by ASSIGNMENT_RE on the full text.)
+  // NOTE: require the `=` to be an INTERIOR assignment (a letter on each side),
+  // NOT trailing base64 padding (`...ODk=`), so a real bare-base64 secret that
+  // merely ends in `=` is NOT exempted.
+  if (/^--?[A-Za-z]/.test(token) || /[A-Za-z0-9)]=[A-Za-z0-9-]/.test(token)) return true;
+  // Canonical UUID appearing anywhere in the token (the anchored UUID_RE can miss
+  // when the tokenizer glued a neighbour char); a UUID is a structured id.
+  if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(token)) return true;
+  // Multi-segment kebab/snake/plus identifier: split on single - _ or + delimiters
+  // (`Send+Sync+Clone`, `Argon2id+AES-256-GCM+zeroize` are technical prose, not keys).
+  const segments = token.split(/[-_+]/);
+  if (segments.length >= 2) {
+    const wordish = (s: string): boolean =>
+      s.length > 0 && /^[A-Za-z][A-Za-z0-9]*$/.test(s) && s.length <= 40;
+    const numeric = (s: string): boolean => /^[0-9]{1,8}$/.test(s);
+    let wordCount = 0;
+    let ok = true;
+    for (const s of segments) {
+      if (wordish(s)) wordCount++;
+      else if (numeric(s)) continue;
+      else {
+        ok = false;
+        break;
+      }
+    }
+    // >=2 word-ish segments and no opaque segment => a compound identifier
+    // (`Set-VMNetworkAdapterVlan`, `praxis-constraint-enforce`), not a secret.
+    if (ok && wordCount >= 2) return true;
+  }
+  // Single-segment CamelCase/PascalCase identifier with NO delimiter and only
+  // letters (e.g. `ValidatePeerReviewPolicyFunction`): case-mix drives its entropy
+  // over the threshold, but an all-letter identifier carries no key material.
+  // Require >=2 case transitions so a genuinely random all-letter blob (which
+  // would still need the entropy+class gate) is not blanket-exempted.
+  if (/^[A-Za-z]+$/.test(token)) {
+    let transitions = 0;
+    for (let i = 1; i < token.length; i++) {
+      const prev = token.charCodeAt(i - 1);
+      const curr = token.charCodeAt(i);
+      const prevLower = prev >= 97 && prev <= 122; // a-z
+      const currUpper = curr >= 65 && curr <= 90; // A-Z
+      if (prevLower && currUpper) transitions++;
+    }
+    if (transitions >= 2) return true;
+  }
+  return false;
+}
+
+/**
  * Heuristic: does `token` look like an opaque high-entropy credential (vs a
  * normal word/hex-hash/sentence)? Requires:
  *  - length >= 24 (long enough to be a key, not a word),
@@ -135,6 +211,17 @@ function looksLikeOpaqueSecret(token: string): boolean {
   // Carve-out 2: base64 of a known binary file type (magic-byte prefix) is
   // embedded media (avatar/thumbnail/attachment), not a credential.
   if (BASE64_FILE_MAGIC_RE.test(token)) return false;
+  // Carve-out 3: a delimited PATH or multi-segment IDENTIFIER is structurally
+  // not a contiguous opaque credential. Real secrets (GitHub/Stripe/AWS/PEM) are
+  // caught FIRST by the named patterns; the entropy fallback exists only for
+  // unbroken opaque blobs. File paths (`a/b/c`), doc-anchor slugs, and
+  // hyphen/underscore-delimited compound identifiers (`Repair-ClusterNameAccount`,
+  // `MEMORY-archive-2026-05-11`, `praxis/expectations/C-NOSTUB-001-no-stubs`) were
+  // the dominant false-positive class in real memory prose. A genuine credential
+  // token does not contain `/` path separators, and is not a run of >=3 word-ish
+  // segments joined by single `-`/`_` delimiters, so carving these out removes the
+  // false positives WITHOUT lowering the bar for opaque secrets.
+  if (looksLikePathOrIdentifier(token)) return false;
   const classes =
     (/[a-z]/.test(token) ? 1 : 0) +
     (/[A-Z]/.test(token) ? 1 : 0) +

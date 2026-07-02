@@ -9,7 +9,7 @@
  *  GATE P4-MATRIX (adversarial redaction):
  *    - 11 REAL secret shapes (AWS AKIA, PEM, GitHub ghp_/gho_, Google AIza,
  *      Slack xoxb, Stripe sk_live_, OpenAI sk-proj-, JWT, Azure AccountKey=,
- *      credential assignment) and 7 tricky CLEAN decoys (prose with the words
+ *      credential assignment) and 12 tricky CLEAN decoys (prose with the words
  *      password/secret/key, sha256 digest, 40-hex git sha, base64 image-ish
  *      blob, code with apiKey identifiers but no value, ordinary runbook,
  *      semver+uuid). Each driven through BOTH direct store() AND chunk-level
@@ -119,7 +119,7 @@ function gateMatrix(): void {
     check("matrix child exit 0", m.status === 0);
     check("matrix ok", m.parsed?.ok === true, m.parsed?.error ?? null);
     const cases = (m.parsed?.cases as MatrixCase[]) ?? [];
-    check("matrix returned all 18 cases", cases.length === 18, { got: cases.length });
+    check("matrix returned all 23 cases", cases.length === 23, { got: cases.length });
 
     // Confusion matrix on DETECTION (detectSecret vs ground truth).
     let TP = 0, FP = 0, TN = 0, FN = 0;
@@ -145,7 +145,7 @@ function gateMatrix(): void {
     check("ZERO false negatives (every secret detected)", FN === 0, { FN });
     check("ZERO false positives (no clean input flagged)", FP === 0, { FP, falsePositives: cases.filter((c) => !c.expectSecret && c.detected).map((c) => c.label) });
     check("ALL 11 real secret shapes detected (TP===11)", TP === 11, { TP });
-    check("ALL 7 clean decoys passed (TN===7)", TN === 7, { TN });
+    check("ALL 12 clean decoys passed (TN===12)", TN === 12, { TN });
 
     // --- Chunk-level sync() path --------------------------------------------
     const ms = runChild(dir, "matrix-sync");
@@ -153,7 +153,7 @@ function gateMatrix(): void {
     check("matrix-sync child exit 0", ms.status === 0);
     check("matrix-sync ok", ms.parsed?.ok === true, ms.parsed?.error ?? null);
     const syncCases = (ms.parsed?.cases as SyncCase[]) ?? [];
-    check("matrix-sync returned all 18 cases", syncCases.length === 18, { got: syncCases.length });
+    check("matrix-sync returned all 23 cases", syncCases.length === 23, { got: syncCases.length });
     for (const c of syncCases) {
       if (c.expectSecret) {
         check(`SECRET[${c.label}] sync chunk 0 ABSENT (refused in write path)`, c.caseChunkPresent === false, c);
@@ -188,10 +188,10 @@ function gateMatrix(): void {
       if (hits.some((h) => String(h.snippet).includes(s))) cleanRecalled++;
       if (hits.some(hitLeaksSecret)) cleanCarriedSecret++;
     }
-    check("RECALL HIT: clean inputs are recallable (>=5 of 7 sentinels surfaced)", cleanRecalled >= 5, { cleanRecalled });
+    check("RECALL HIT: clean inputs are recallable (>=7 of 12 sentinels surfaced)", cleanRecalled >= 7, { cleanRecalled });
     check("clean recall never carries secret material", cleanCarriedSecret === 0, { cleanCarriedSecret });
 
-    console.log(`  >>> MATRIX SUMMARY: TP=${TP} FP=${FP} TN=${TN} FN=${FN} | secretLeaks=${secretLeaks} | cleanRecalled=${cleanRecalled}/7`);
+    console.log(`  >>> MATRIX SUMMARY: TP=${TP} FP=${FP} TN=${TN} FN=${FN} | secretLeaks=${secretLeaks} | cleanRecalled=${cleanRecalled}/12`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
