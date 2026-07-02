@@ -4,7 +4,9 @@
  * Registers a read+write memory capability backed by `@plures/pluresdb-native`.
  * Read surface: search / readFile / status / probes. Write surface: the memory
  * manager's `sync()` ingests session transcripts (and, on a forced rescan, an
- * optional configured `sourceDir`) into the store so they are recallable. No
+ * optional configured `sourceDir`) into the store so they are recallable. The
+ * write path additionally applies native HEADROOM token-compression to
+ * oversized node bodies before persistence when `compressAboveTokens > 0`. No
  * flush-plan resolver and no prompt-section takeover — only the exclusive
  * memory capability runtime.
  *
@@ -15,6 +17,9 @@
  *   - maxResults:    default recall limit (default 8)
  *   - sourceDir:     optional absolute dir of memory-doc files ingested on a
  *                    force:true sync (session transcripts ingest regardless)
+ *   - compressAboveTokens: token floor (>0) above which a node body is
+ *                    compacted by native headroom `compressText` before
+ *                    persistence; 0/unset disables it (bodies stored verbatim)
  */
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
@@ -27,6 +32,7 @@ type PluresLmPluginConfig = {
   vectorThreshold?: number;
   maxResults?: number;
   sourceDir?: string;
+  compressAboveTokens?: number;
 };
 
 function readConfig(raw: Record<string, unknown> | undefined): PluresLmPluginConfig {
@@ -39,7 +45,9 @@ function readConfig(raw: Record<string, unknown> | undefined): PluresLmPluginCon
   const maxResults =
     typeof cfg.maxResults === "number" ? cfg.maxResults : undefined;
   const sourceDir = typeof cfg.sourceDir === "string" ? cfg.sourceDir : undefined;
-  return { dbPath, embeddingModel, vectorThreshold, maxResults, sourceDir };
+  const compressAboveTokens =
+    typeof cfg.compressAboveTokens === "number" ? cfg.compressAboveTokens : undefined;
+  return { dbPath, embeddingModel, vectorThreshold, maxResults, sourceDir, compressAboveTokens };
 }
 
 const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({

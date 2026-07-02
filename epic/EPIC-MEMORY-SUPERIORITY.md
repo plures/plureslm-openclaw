@@ -21,7 +21,11 @@ an LLM reflection pass, keep memory-core as the safety net.
 
 ## Children
 
-> **STATUS (2026-07-01):** 🎉 **EPIC COMPLETE** — P0 ✅ · P1 ✅ · P2 ✅ · H ✅ · P3 ✅ · P4 ✅ ALL CLOSED + merged to `main` (tip `9b77b91`). Salience is computed → persisted → **consumed**. Every gate green on the merged tree.
+> **STATUS (2026-07-02, mswork RECONCILED):** ⚠️ **CORRECTION — epic is NOT fully complete.** P0 ✅ · P1 ✅ · P2 ✅ · P3 ✅ · P4 ✅ are **verified LIVE in the running dist** against the migrated-store (not just merged). But **H (headroom) was OVER-CLAIMED** — it is spec-only; the headroom code never left `pares-agens` (zero headroom/tiktoken/compress symbols in `plureslm-openclaw/dist/`, `index.ts` registers no flush-plan resolver). GitHub #2/#3/#4/#5 CLOSED with evidence 2026-07-02; **#6 (H) remains OPEN — real work pending.** Also carved out: true reactive PUSH (`subscribe()`) is a native stub, not shipped; pull/tick (P3) is the sanctioned mechanism until native async subscriptions land.
+>
+> **The prior '2026-07-01 EPIC COMPLETE' line below was inaccurate for H** and is retained only for history. This is exactly the 'COMPLETE claim that doesn't survive a dist/ check' failure class AGENTS.md warns about; caught via git-log + dist grep + live store verification.
+
+> **STATUS (2026-07-01):** 🎉 **EPIC COMPLETE** — P0 ✅ · P1 ✅ · P2 ✅ · H ✅ · P3 ✅ · P4 ✅ ALL CLOSED + merged to `main` (tip `9b77b91`). Salience is computed → persisted → **consumed**. Every gate green on the merged tree.  ← ⚠️ SUPERSEDED: H was NOT actually ported into this plugin (see 2026-07-02 correction above).
 
 ### P0 — Own the memory slot safely  ·  ✅ CLOSED (merged)
 Real `sync()` write path so plureslm can capture (not just read) memory, manifest `kind:memory`,
@@ -52,7 +56,11 @@ Express promotion/redaction/retention rules as `.px` enforced via `pxOnAction`: 
 auditable, reversible memory governance. Aligns directly with the Headroom port (also `.px`).
 - CLOSED: C-MEM-REDACT blocks secret-shaped writes (native pxOnAction, fails closed, whole-chunk refusal); src/redact.ts detects PEM/AWS/GitHub/Google/Slack/Stripe/OpenAI/JWT/Azure/bearer + entropy, confusion matrix TP=11 FP=0 TN=7 FN=0. Verified green on merged main. Spec: `epic/P4-governed-writes-SPEC.md`.
 
-### H — Headroom token-compression port  ·  agens-brought IP  ·  ✅ CLOSED (merged, `4c15874`)
+### H — Headroom token-compression port  ·  agens-brought IP  ·  ⚠️ NOT SHIPPED (spec-only; #6 OPEN)
+
+> **2026-07-02 CORRECTION (mswork):** despite the `4c15874` 'H CLOSED' commit, **H was never actually ported into this plugin.** Verified: `plureslm-openclaw/dist/*.js` contains ZERO headroom/tiktoken/compress code; `src/index.ts` registers only `registerMemoryCapability` and explicitly notes 'no flush-plan resolver'. The '94.3% compression' was measured in `pares-agens`, not here. The `H-*-NOTES.md` are DESIGN/ANALYSIS artifacts, not shipped code.
+>
+> **REAL REMAINING WORK (per `H-headroom-port-SPEC.md`):** port the production `HeadroomHook` **bridge** logic (prose head+tail window / code AST-signature skeleton / log run-collapse / json whitespace-collapse; `tiktoken_rs::cl100k_base` counting) as a **net-new `compress*` NAPI export on `@plures/pluresdb-native`** (co-located with `PluresDatabase`, NO new crate, NO agens dependency edge), then register a **`MemoryFlushPlan` resolver** in the plugin so compression is live in the OpenClaw memory/context path. **DO NOT** port the ~160 `.px` strategy stubs (`router.px`/`pipeline.px`/`scorer.px`/`fitter.px`) — the production hook doesn't use them and they return canned JSON (would violate C-NOSTUB-001). Needs a task-scoped worktree on pluresdb-native (session-workspace-isolation).
 Port the pares-agens **Headroom** capability into the pluresLM/OpenClaw context path. Headroom
 is ALREADY PluresDB-native + `.px`-based (so it slots into P4's governance direction):
 - `HeadroomActionHandler` — a `.px` ActionHandler: tiktoken-based token counting + compression

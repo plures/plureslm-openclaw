@@ -9,7 +9,7 @@
  * created between freshly-written same-session/same-category chunks
  * (link-on-write) and traversed at recall time to surface adjacent memories.
  * All three surfaces reuse the SAME memoized native handle the read side
- * opened (see the exclusive-lock constraint below) — it never opens a second
+ * opened (see the exclusive-lock constraint below) - it never opens a second
  * `PluresDatabase` on a live dbPath. Graph ops are EXEC-ONLY in the native
  * (`@plures/pluresdb-native@2.0.0-alpha.1` exposes no direct `autoLink`/
  * `graphNeighbors` method), so they run through `execIr(steps)`; the only
@@ -21,7 +21,7 @@
  * Two hard constraints from the native, verified against
  * `@plures/pluresdb-native@2.0.0-alpha.1`:
  *
- *  1. A given `dbPath` holds an EXCLUSIVE file lock — only one open handle may
+ *  1. A given `dbPath` holds an EXCLUSIVE file lock - only one open handle may
  *     exist per path per process. We therefore memoize one handle per resolved
  *     dbPath (a process-local singleton). Reads AND writes go through that one
  *     handle; opening a second handle on the same path would deadlock/throw
@@ -34,14 +34,14 @@
  * Write path / embed-on-write (DEF-PATHB-1): the native alpha documents that
  * `put(id, data)` auto-embeds text content when the handle was opened via
  * `newWithEmbeddings(...)`, but `@plures/pluresdb-native@2.0.0-alpha.1` does NOT
- * honor that contract — a plain `put` stores the node WITHOUT a vector, so
+ * honor that contract - a plain `put` stores the node WITHOUT a vector, so
  * `buildVectorIndex()` finds nothing and a purely semantic (vector) query of a
  * just-written node returns 0 (root-caused in PATH-B-QA-NOTES.md via
  * `test/qa-vector-probe.mts`). The embedder itself works (`embed()` returns a
  * full-dimension row) and the index/search machinery works when an embedding is
  * actually stored. We therefore embed text explicitly on the write path and
- * persist the vector via `putWithEmbedding(id, data, vec)` — proven to restore
- * end-to-end vector recall — falling back to plain `put(id, data)` only when no
+ * persist the vector via `putWithEmbedding(id, data, vec)` - proven to restore
+ * end-to-end vector recall - falling back to plain `put(id, data)` only when no
  * embedder is available or the node carries no embeddable text (an honest
  * text-only write, never a fabricated vector).
  */
@@ -109,7 +109,7 @@ const RECALL_CONTENT_FIELDS = [
  * sizes, timestamps, graph plumbing). The gate excludes their values from the
  * whole-payload fallback scan so a synthetic id-shaped value (e.g. a chunk
  * `hash` like `h-foo-bar-1`, 24+ mixed-class chars) is not mistaken for an
- * opaque secret — the same class of structured-non-secret carve-out the
+ * opaque secret - the same class of structured-non-secret carve-out the
  * detector already applies to UUIDs and base64 media. A real secret is content,
  * and content never lives in these keys.
  */
@@ -154,12 +154,12 @@ function redactConstraintSpec(): Record<string, unknown> {
 // --- P3 reactive consolidation sweep (pull/tick, NOT push) ------------------
 //
 // HARD REALITY (confirmed against `@plures/pluresdb-native@2.0.0-alpha.1`): the
-// Node binding has NO push/reactive path — a `put` does not auto-run a
+// Node binding has NO push/reactive path - a `put` does not auto-run a
 // procedure, `subscribe()` is an id-only stub, and procedures are not
 // executable via the binding. So consolidation is a PULL/TICK sweep: a set of
 // idempotent `execIr` steps run on the SINGLE memoized handle, invoked
 // opportunistically by the lazy `sync()` path (never a background thread, never
-// a second handle, never a self-firing timer — any of which would break the
+// a second handle, never a self-firing timer - any of which would break the
 // native's exclusive file lock). Schedule/checkpoint state is DURABLE, stored
 // via the real `agensStateSet`/`agensStateGet` reactive-state table (confirmed
 // present + round-trips) so the interval guard and run history survive restart.
@@ -178,7 +178,7 @@ const CONSOLIDATE_MIN_INTERVAL_MS = 60_000;
  * relevance, so a salient node is not necessarily the most relevant one. A
  * small proportional nudge lets salience break near-ties in favor of
  * structurally-important memories WITHOUT letting a weakly-matching-but-central
- * node leapfrog a strong direct hit — protecting P1 recall precision. When the
+ * node leapfrog a strong direct hit - protecting P1 recall precision. When the
  * salient set is EMPTY (never consolidated / no edges → uniform pagerank), the
  * bonus term is 0 for every hit, so the sort is byte-identical to a raw score
  * sort (the required no-op invariant).
@@ -275,6 +275,13 @@ function ensureNativeLibraryPath(): void {
 type PluresNativeModule = {
   PluresDatabase: typeof PluresDatabaseType;
   init?: () => void;
+  // Headroom token-compression free functions (native, real algorithm - see
+  // pluresdb-node/src/headroom.rs; NAPI wrappers in lib.rs). Optional in the
+  // type because an older linked native build may predate them; consumers MUST
+  // check presence and fail honestly (never silently no-op) per C-NOSTUB-001.
+  compressText?: (content: string, contentType?: string) => string;
+  countTokens?: (text: string) => number;
+  detectContentType?: (content: string) => string;
 };
 
 let cachedModule: PluresNativeModule | null = null;
@@ -286,11 +293,72 @@ function loadNative(): PluresNativeModule {
   const mod = require("@plures/pluresdb-native") as PluresNativeModule;
   if (!mod || typeof mod.PluresDatabase !== "function") {
     throw new Error(
-      "[plureslm] @plures/pluresdb-native loaded but PluresDatabase export is missing — native addon failed to load.",
+      "[plureslm] @plures/pluresdb-native loaded but PluresDatabase export is missing - native addon failed to load.",
     );
   }
   cachedModule = mod;
   return mod;
+}
+
+/**
+ * Headroom token-compression surface (native).
+ *
+ * Thin, honest wrappers over the `@plures/pluresdb-native` free functions
+ * (`compressText`/`countTokens`/`detectContentType`), resolved through the same
+ * cached `loadNative()` handle the DB uses. These power the memory flush-plan
+ * resolver (headroom): compressing oversized memory/context payloads to fit a
+ * token reserve budget.
+ *
+ * Honesty boundary (C-NOSTUB-001): if the linked native build predates the
+ * headroom NAPI (functions absent), these THROW a descriptive error rather than
+ * silently returning the input uncompressed. A caller that wants graceful
+ * degradation must use `headroomAvailable()` to gate first - the failure is
+ * never hidden.
+ */
+export function headroomAvailable(): boolean {
+  const mod = loadNative();
+  return (
+    typeof mod.compressText === "function" &&
+    typeof mod.countTokens === "function" &&
+    typeof mod.detectContentType === "function"
+  );
+}
+
+/** Count tokens with the native `tiktoken_rs` cl100k tokenizer (exact). */
+export function countTokens(text: string): number {
+  const mod = loadNative();
+  if (typeof mod.countTokens !== "function") {
+    throw new Error(
+      "[plureslm] native countTokens() unavailable - linked @plures/pluresdb-native predates the headroom NAPI surface.",
+    );
+  }
+  return mod.countTokens(text);
+}
+
+/** Detect content type ('code' | 'log' | 'prose' | ...) for routing compression. */
+export function detectContentType(content: string): string {
+  const mod = loadNative();
+  if (typeof mod.detectContentType !== "function") {
+    throw new Error(
+      "[plureslm] native detectContentType() unavailable - linked @plures/pluresdb-native predates the headroom NAPI surface.",
+    );
+  }
+  return mod.detectContentType(content);
+}
+
+/**
+ * Compress one content body, routing by content type exactly like the native
+ * production `compress_one`. Pass a bare `contentType` string to pin the route,
+ * or omit to auto-detect. Returns the compacted text.
+ */
+export function compressContent(content: string, contentType?: string): string {
+  const mod = loadNative();
+  if (typeof mod.compressText !== "function") {
+    throw new Error(
+      "[plureslm] native compressText() unavailable - linked @plures/pluresdb-native predates the headroom NAPI surface.",
+    );
+  }
+  return mod.compressText(content, contentType);
 }
 
 /** One ranked recall hit, normalized from a raw PluresDB node record. */
@@ -309,8 +377,8 @@ export type RecallHit = {
   data: unknown;
   /**
    * Which retrieval path produced the hit:
-   *  - `"vector"` / `"text"` — a DIRECT hit from the cosine/keyword search.
-   *  - `"graph"` — an ASSOCIATIVE hit pulled in via {@link PluresLmStore.neighbors}
+   *  - `"vector"` / `"text"` - a DIRECT hit from the cosine/keyword search.
+   *  - `"graph"` - an ASSOCIATIVE hit pulled in via {@link PluresLmStore.neighbors}
    *    by expanding a direct hit's graph edges. Graph hits carry no cosine/text
    *    score of their own; they are appended after the direct hits so top-k
    *    precision is preserved (they never displace/outrank a direct hit).
@@ -321,8 +389,8 @@ export type RecallHit = {
 /**
  * Why a node was NOT written during a {@link PluresLmStore.store} /
  * {@link PluresLmStore.put} call:
- *  - `"unchanged"` — dirty-tracking matched the stored content (no re-embed).
- *  - `"secret"` — REFUSED by the C-MEM-REDACT governed-write gate: the chunk
+ *  - `"unchanged"` - dirty-tracking matched the stored content (no re-embed).
+ *  - `"secret"` - REFUSED by the C-MEM-REDACT governed-write gate: the chunk
  *    content tripped the real secret detector and the native `pxOnAction`
  *    engine blocked the write. The node was NOT persisted; this is an honest
  *    refusal surfaced to the caller, never a silent drop (C-NOSTUB-001).
@@ -339,9 +407,9 @@ export type RefusedWrite = {
 
 /**
  * Result of a batch {@link PluresLmStore.store}.
- *  - `written` — nodes actually persisted.
- *  - `skipped` — nodes not persisted because unchanged (dirty-tracking).
- *  - `refused` — nodes BLOCKED by the governed-write gate (secret content).
+ *  - `written` - nodes actually persisted.
+ *  - `skipped` - nodes not persisted because unchanged (dirty-tracking).
+ *  - `refused` - nodes BLOCKED by the governed-write gate (secret content).
  *    These are reported, never silently dropped; `refusedDetail` carries the
  *    id + detected secret kind for each.
  */
@@ -350,19 +418,23 @@ export type StoreWriteResult = {
   skipped: number;
   refused: number;
   refusedDetail: RefusedWrite[];
+  /** Nodes whose body was compacted by native headroom before persistence. */
+  compressed: number;
+  /** Total exact-token reduction across all compressed bodies (before - after). */
+  tokensSaved: number;
 };
 
 /**
  * Outcome of one {@link PluresLmStore.consolidate} pull/tick sweep.
- *  - `ran` — false when the interval guard short-circuited (cheap no-op).
- *  - `reason` — why it ran or was skipped (`"forced"`, `"interval"`,
+ *  - `ran` - false when the interval guard short-circuited (cheap no-op).
+ *  - `reason` - why it ran or was skipped (`"forced"`, `"interval"`,
  *    `"too-soon"`, `"empty"`, `"error"`).
- *  - `edges` — total associative edges in the graph after the sweep.
- *  - `sessionNodes` — count of session memory chunks considered.
- *  - `clusters` — number of communities detected (louvain), 0 when none.
- *  - `topRanked` — up to a few highest-PageRank node ids (structural salience).
- *  - `runs` — monotonic count of sweeps recorded in the durable checkpoint.
- *  - `checkpointEpoch` — the persisted lastRunEpoch after this sweep.
+ *  - `edges` - total associative edges in the graph after the sweep.
+ *  - `sessionNodes` - count of session memory chunks considered.
+ *  - `clusters` - number of communities detected (louvain), 0 when none.
+ *  - `topRanked` - up to a few highest-PageRank node ids (structural salience).
+ *  - `runs` - monotonic count of sweeps recorded in the durable checkpoint.
+ *  - `checkpointEpoch` - the persisted lastRunEpoch after this sweep.
  * Every field is derived from a REAL execIr result; nothing is fabricated. When
  * a sub-metric is not computable it is reported honestly (0 / empty), not faked.
  */
@@ -394,6 +466,15 @@ export type PluresLmStoreOptions = {
   actorId?: string;
   vectorThreshold?: number;
   maxResults?: number;
+  /**
+   * Headroom write-path compression floor (tokens). When > 0 AND the native
+   * headroom surface is available, a node body whose exact cl100k token count
+   * EXCEEDS this floor is routed through native `compressText` (content type
+   * auto-detected) before persistence; bodies at/below the floor are persisted
+   * verbatim. 0 / undefined disables compression entirely - an honest
+   * off-switch, never a silent no-op (C-NOSTUB-001).
+   */
+  compressAboveTokens?: number;
 };
 
 type RawNode = {
@@ -411,7 +492,7 @@ function deriveSnippet(data: unknown): string {
   if (data && typeof data === "object") {
     const obj = data as Record<string, unknown>;
     // Prefer common content-bearing fields, in priority order (shared with the
-    // governed-write gate so the two never drift — see RECALL_CONTENT_FIELDS).
+    // governed-write gate so the two never drift - see RECALL_CONTENT_FIELDS).
     for (const key of RECALL_CONTENT_FIELDS) {
       const val = obj[key];
       if (typeof val === "string" && val.trim().length > 0) return val;
@@ -448,7 +529,7 @@ function normalizeHit(
   // Edges live in the same node space as memory chunks (an edge is just a node
   // with `data._edge === true`, id `edge::{from}::{to}`). Once link-on-write
   // populates them, a plain vector/text search could surface one. Drop edge
-  // nodes from recall hits — they are graph plumbing, never a memory result.
+  // nodes from recall hits - they are graph plumbing, never a memory result.
   if (
     data &&
     typeof data === "object" &&
@@ -477,6 +558,12 @@ export class PluresLmStore {
   readonly embeddingModel: string;
   readonly vectorThreshold: number;
   readonly maxResults: number;
+  /**
+   * Write-path headroom compression floor (tokens). 0 = disabled. A body whose
+   * exact cl100k token count exceeds this is compacted by native `compressText`
+   * before persistence; at/below is persisted verbatim. See {@link #maybeCompress}.
+   */
+  readonly compressAboveTokens: number;
   #db: PluresDatabaseType | null = null;
   #openError: string | null = null;
   #embedderAvailable: boolean | null = null;
@@ -484,7 +571,7 @@ export class PluresLmStore {
    * Process-local latch: the C-MEM-REDACT governed-write constraint is declared
    * into the store at most once per handle (idempotent in the native too, but we
    * avoid the redundant call). `null` = not yet attempted, `true` = persisted,
-   * `false` = declaration failed (gate then fails CLOSED — see {@link #gateWrite}).
+   * `false` = declaration failed (gate then fails CLOSED - see {@link #gateWrite}).
    */
   #governanceReady: boolean | null = null;
 
@@ -493,6 +580,12 @@ export class PluresLmStore {
     this.embeddingModel = opts.embeddingModel;
     this.vectorThreshold = opts.vectorThreshold ?? 0.3;
     this.maxResults = opts.maxResults ?? 8;
+    // 0 (or negative / undefined) => compression OFF. No implicit default: the
+    // operator opts in explicitly via config, so behavior is never surprising.
+    this.compressAboveTokens =
+      typeof opts.compressAboveTokens === "number" && opts.compressAboveTokens > 0
+        ? Math.floor(opts.compressAboveTokens)
+        : 0;
   }
 
   /** Process-local singletons keyed by resolved dbPath. */
@@ -514,10 +607,10 @@ export class PluresLmStore {
   }
 
   /**
-   * TEST-ONLY seam (documented double at a real seam — C-NOSTUB-001 item 3, NOT
+   * TEST-ONLY seam (documented double at a real seam - C-NOSTUB-001 item 3, NOT
    * a shipped path): force the governance latch into the FAILED state, exactly
    * as if the native `pxInsertConstraint` declaration had thrown when installing
-   * C-MEM-REDACT. This does NOT fake the gate's decision — it induces the
+   * C-MEM-REDACT. This does NOT fake the gate's decision - it induces the
    * genuine precondition ("the safety rule could not be installed") that is
    * otherwise nondeterministic to trigger, so the fail-CLOSED branch of the REAL
    * {@link #gateWrite} (refuse every detector-positive chunk; never let a
@@ -542,14 +635,14 @@ export class PluresLmStore {
   }
 
   /**
-   * TEST-ONLY seam (documented double at a real seam — C-NOSTUB-001 item 3, NOT
+   * TEST-ONLY seam (documented double at a real seam - C-NOSTUB-001 item 3, NOT
    * a shipped path): make the next `count` invocations of the live handle's
    * native `execIr` THROW, so the best-effort posture of {@link consolidate}
    * (every internal `execIr` step is wrapped; a native failure degrades that
    * metric and the sweep still returns / never throws out of the write/search
    * contract) can be proven against a REAL throw rather than an assumed one.
    * Defaults to poisoning every subsequent call until cleared with `count<=0`.
-   * The real `consolidate`/`execIr` error handling is what is under test — this
+   * The real `consolidate`/`execIr` error handling is what is under test - this
    * only injects the failure at the native boundary.
    */
   _poisonExecIrForTests(count = Number.MAX_SAFE_INTEGER): void {
@@ -580,7 +673,7 @@ export class PluresLmStore {
   /**
    * Lazily open the underlying database with the configured embedding model.
    * If embedder construction fails (e.g. model unavailable offline), we fall
-   * back to a plain handle so text search + status still work — vector recall
+   * back to a plain handle so text search + status still work - vector recall
    * is then skipped, never faked.
    */
   #ensureDb(): PluresDatabaseType {
@@ -595,7 +688,7 @@ export class PluresLmStore {
       );
       this.#embedderAvailable = true;
     } catch (err) {
-      // Embedder path failed — degrade to a plain read handle (text-only).
+      // Embedder path failed - degrade to a plain read handle (text-only).
       const msg = err instanceof Error ? err.message : String(err);
       try {
         this.#db = new PluresDatabase(this.#actorId(), this.dbPath);
@@ -619,7 +712,7 @@ export class PluresLmStore {
 
   /**
    * Embed `text` and return the vector iff it has the expected dimension.
-   * Returns `null` on any failure or shape mismatch — the caller then falls
+   * Returns `null` on any failure or shape mismatch - the caller then falls
    * back to a plain (text-only) `put`. Never throws; never fabricates a vector.
    */
   #embedForWrite(db: PluresDatabaseType, text: string): number[] | null {
@@ -665,7 +758,7 @@ export class PluresLmStore {
    * native `on_action` engine enforces it on every {@link #gateWrite}. Returns
    * `true` when the constraint is in place. If declaration fails we record
    * `false` and the gate fails CLOSED (refuses writes) rather than silently
-   * letting ungoverned writes through — a safety rule that cannot be installed
+   * letting ungoverned writes through - a safety rule that cannot be installed
    * must not be silently skipped.
    *
    * Idempotent: `pxInsertConstraint` upserts by id, and the latch avoids the
@@ -682,7 +775,7 @@ export class PluresLmStore {
       );
       this.#governanceReady = true;
     } catch {
-      // Could not install the safety rule — fail closed.
+      // Could not install the safety rule - fail closed.
       this.#governanceReady = false;
     }
     return this.#governanceReady;
@@ -699,7 +792,7 @@ export class PluresLmStore {
    * `{ allow:false, kind }` when it is REFUSED (caller must NOT persist the
    * node and must report the refusal). Fails CLOSED: if governance could not be
    * installed, or any detector-positive chunk reaches an engine that does not
-   * throw, the write is refused — a secret must never slip through because the
+   * throw, the write is refused - a secret must never slip through because the
    * gate was unavailable.
    *
    * The block decision is made by the native engine, not by a TS `if`: this
@@ -707,17 +800,17 @@ export class PluresLmStore {
    * what makes the rule DB-governed (C-PLURES-004) rather than a local check.
    */
   /**
-   * The text surface a recall could expose for a node — the exact input the gate
+   * The text surface a recall could expose for a node - the exact input the gate
    * must scan so a secret cannot hide in a content field the detector never saw.
    * (QA DEF: a benign `content` with a live token in `value`/`body`/`note`/an
-   * arbitrary content field used to be WRITTEN and then RECALLED — a real leak,
+   * arbitrary content field used to be WRITTEN and then RECALLED - a real leak,
    * because the gate only inspected the single primary snippet.)
    *
    * Scans every CONTENT-bearing string value in the payload (recursively into
    * nested objects/arrays), each on its own line, but EXCLUDES structural /
    * bookkeeping keys ({@link STRUCTURAL_NONCONTENT_KEYS}: ids, hashes, line
    * numbers, sizes, timestamps, graph plumbing) whose synthetic id-shaped values
-   * are never user content and never a recall snippet — including them would
+   * are never user content and never a recall snippet - including them would
    * manufacture false `high-entropy-token` positives (e.g. a chunk `hash` like
    * `h-foo-bar-1`) without catching any real secret.
    *
@@ -735,7 +828,7 @@ export class PluresLmStore {
     const values: string[] = [];
     const seen = new Set<unknown>();
     const visit = (v: unknown, key: string | null): void => {
-      // Skip structural/bookkeeping keys entirely — their values are ids/hashes,
+      // Skip structural/bookkeeping keys entirely - their values are ids/hashes,
       // never content, never a recall snippet.
       if (key !== null && STRUCTURAL_NONCONTENT_KEYS.has(key)) return;
       if (typeof v === "string") {
@@ -751,7 +844,7 @@ export class PluresLmStore {
           for (const [k, item] of Object.entries(v as Record<string, unknown>)) visit(item, k);
         }
       }
-      // numbers/booleans/null are never credential-bearing text — ignore.
+      // numbers/booleans/null are never credential-bearing text - ignore.
     };
     visit(data, null);
     return values.join("\n");
@@ -763,7 +856,7 @@ export class PluresLmStore {
     data: Record<string, unknown>,
   ): { allow: true } | { allow: false; kind?: string } {
     // The gate inspects the FULL recall-exposable surface (every content field
-    // AND the whole-payload JSON), not just the primary snippet — a secret in
+    // AND the whole-payload JSON), not just the primary snippet - a secret in
     // any recallable field must be caught, never only the one in `content`.
     const text = this.#gateScanText(data);
     const finding = detectSecret(text);
@@ -778,7 +871,7 @@ export class PluresLmStore {
 
     if (!governed) {
       // Safety rule unavailable: fail closed. Only refuse the chunks the real
-      // detector flagged (clean chunks still write) — we never fabricate a
+      // detector flagged (clean chunks still write) - we never fabricate a
       // secret, but we never let a detected one through ungoverned either.
       return finding.has_secret ? { allow: false, kind: finding.kind } : { allow: true };
     }
@@ -790,7 +883,7 @@ export class PluresLmStore {
       if (finding.has_secret) return { allow: false, kind: finding.kind };
       return { allow: true };
     } catch {
-      // Engine BLOCKED the write (ActionBlocked thrown) — honest refusal.
+      // Engine BLOCKED the write (ActionBlocked thrown) - honest refusal.
       return { allow: false, kind: finding.kind };
     }
   }
@@ -801,8 +894,8 @@ export class PluresLmStore {
    * When `#embedderAvailable === true` and the node carries embeddable text, we
    * compute the vector and persist it via `putWithEmbedding` (DEF-PATHB-1: the
    * native alpha's `put` does not auto-embed, so an explicit embedding is the
-   * only way the node becomes vector-searchable). Otherwise — no embedder, no
-   * text, or an embed failure/shape-mismatch — we fall back to plain `put`,
+   * only way the node becomes vector-searchable). Otherwise - no embedder, no
+   * text, or an embed failure/shape-mismatch - we fall back to plain `put`,
    * which is an honest text-only write (never a fabricated vector).
    *
    * Assumes the caller already decided the node is dirty (see `#isDirty`); this
@@ -888,7 +981,7 @@ export class PluresLmStore {
   /**
    * Read one node payload by id (read-only pass-through to native `get`).
    * Returns the stored object, or `null` when absent / on any error. Used by
-   * callers (and the gate) that need a direct existence/absence check — e.g. to
+   * callers (and the gate) that need a direct existence/absence check - e.g. to
    * prove a chunk REFUSED by the governed-write gate was truly never persisted.
    */
   get(id: string): Record<string, unknown> | null {
@@ -911,7 +1004,7 @@ export class PluresLmStore {
    * structural-salience set ({@link #salientIds}, the last sweep's top-PageRank
    * ids) get a small PROPORTIONAL bonus ({@link SALIENCE_BONUS}) so that, among
    * comparably-similar candidates, structurally-important memories surface
-   * first. The raw `hit.score` is NOT mutated — only the sort key is the
+   * first. The raw `hit.score` is NOT mutated - only the sort key is the
    * effective score. When the salient set is empty (never consolidated / no
    * edges) the bonus is 0 everywhere, so ordering is byte-identical to the raw
    * score sort. Graph-expansion (`via:"graph"`) hits are appended DOWNSTREAM in
@@ -936,7 +1029,7 @@ export class PluresLmStore {
           }
         }
       } catch {
-        // Vector path unavailable at runtime — fall through to text search.
+        // Vector path unavailable at runtime - fall through to text search.
       }
     }
 
@@ -949,12 +1042,12 @@ export class PluresLmStore {
           if (hit && !byId.has(hit.id)) byId.set(hit.id, hit);
         }
       } catch {
-        // Text search failed — return whatever the vector path produced.
+        // Text search failed - return whatever the vector path produced.
       }
     }
 
     // Salience-weighted ordering. Read the persisted structural-salience set
-    // ONCE (from the durable checkpoint via the memoized handle — no pagerank
+    // ONCE (from the durable checkpoint via the memoized handle - no pagerank
     // recompute). eff(hit) = score + SALIENCE_BONUS*score when the hit is
     // salient, else eff == score. INVARIANT: an empty salient set makes eff
     // == score for every hit, so this reduces to the prior raw-score sort
@@ -971,22 +1064,22 @@ export class PluresLmStore {
    *
    * Governed-write gate (C-MEM-REDACT) runs FIRST: the node content is scanned
    * by the real secret detector and the decision is routed through the native
-   * `pxOnAction` engine. A chunk carrying secret material is REFUSED — NOT
-   * persisted — and `false` is returned (same as an unchanged skip from the
+   * `pxOnAction` engine. A chunk carrying secret material is REFUSED - NOT
+   * persisted - and `false` is returned (same as an unchanged skip from the
    * caller's boolean view; use {@link store} when you need the refusal reason).
    *
    * Dirty-tracking: when the dirty key (the chunk `hash`, falling back to
    * `mtimeMs`+`size`) matches what is already stored under `id`, the put is
-   * SKIPPED and `false` is returned — so a re-sync of unchanged content does not
+   * SKIPPED and `false` is returned - so a re-sync of unchanged content does not
    * re-embed. Returns `true` when a put actually happened.
    *
    * Embed-on-write (DEF-PATHB-1): when an embedder is available and the node
    * carries embeddable text (`content` -> `text` -> `summary`), the vector is
    * computed and persisted via `putWithEmbedding` so the node is vector-
-   * searchable — the native alpha's `put` does NOT auto-embed despite its docs,
+   * searchable - the native alpha's `put` does NOT auto-embed despite its docs,
    * so an explicit embedding is required (proven in PATH-B-QA-NOTES.md). If the
    * embedder degraded (`#embedderAvailable === false`), or the node carries no
-   * text, or the embed call fails, the node is STILL written via plain `put` —
+   * text, or the embed call fails, the node is STILL written via plain `put` -
    * an honest text-only write, never a fabricated embedding. Callers can inspect
    * {@link hasEmbedder} / {@link status} to surface that distinction honestly.
    */
@@ -1007,7 +1100,7 @@ export class PluresLmStore {
    * Governed-write gate (C-MEM-REDACT): every node is scanned for secret
    * material by the real detector and the block/allow decision is made by the
    * native `pxOnAction` engine BEFORE the node is persisted. A flagged chunk is
-   * REFUSED (not written) and recorded in `refused`/`refusedDetail` — an honest
+   * REFUSED (not written) and recorded in `refused`/`refusedDetail` - an honest
    * refusal surfaced to the caller, never a silent drop (C-NOSTUB-001). Clean
    * sibling chunks in the same batch are unaffected and still written.
    *
@@ -1016,16 +1109,69 @@ export class PluresLmStore {
    * cost beyond the single best-effort call). When nothing was written the
    * index rebuild is skipped entirely.
    */
+  /**
+   * Headroom write-path compression (native). For the single body field that
+   * {@link #embeddableText} would embed (`content` → `text` → `summary`), if
+   * compression is enabled (`compressAboveTokens > 0`), the native headroom
+   * surface is available, and the body's EXACT cl100k token count exceeds the
+   * floor, replace the body IN PLACE with `compressText(body, detected-type)`
+   * and return the exact token reduction (before − after). Otherwise the body is
+   * left untouched and 0 is returned.
+   *
+   * Honesty (C-NOSTUB-001): this is a REAL native transform measured in real
+   * tokens, never a claimed/simulated reduction. If headroom is unavailable it
+   * is a genuine no-op (0), never a silent pretend-compress; if the compacted
+   * body is not actually smaller (native chose not to reduce), the original is
+   * kept and 0 returned — we never persist a "compressed" body that isn't.
+   * Runs only on bodies that already PASSED the secret gate, so it can never
+   * touch secret-bearing content.
+   */
+  #maybeCompress(data: Record<string, unknown>): number {
+    if (this.compressAboveTokens <= 0) return 0;
+    if (!headroomAvailable()) return 0;
+    // Same key precedence the embedder uses, so embedded + persisted body stay consistent.
+    let key: string | null = null;
+    for (const k of ["content", "text", "summary"]) {
+      const v = data[k];
+      if (typeof v === "string" && v.trim().length > 0) {
+        key = k;
+        break;
+      }
+    }
+    if (!key) return 0;
+    const body = data[key] as string;
+    let before: number;
+    try {
+      before = countTokens(body);
+    } catch {
+      return 0; // native counting unavailable mid-flight: skip honestly.
+    }
+    if (before <= this.compressAboveTokens) return 0;
+    let compacted: string;
+    try {
+      compacted = compressContent(body, detectContentType(body));
+    } catch {
+      return 0; // native compress unavailable mid-flight: persist verbatim.
+    }
+    const after = countTokens(compacted);
+    // Only accept a genuine reduction; never swap in a body that isn't smaller.
+    if (!(after < before) || compacted.length >= body.length) return 0;
+    data[key] = compacted;
+    return before - after;
+  }
+
   store(
     nodes: Array<{ id: string; data: Record<string, unknown> }>,
   ): StoreWriteResult {
     const db = this.#ensureDb();
     let written = 0;
     let skipped = 0;
+    let compressed = 0;
+    let tokensSaved = 0;
     const refusedDetail: RefusedWrite[] = [];
     for (const node of nodes) {
       // Check dirtiness FIRST so an unchanged node is never embedded nor gated
-      // — the lazy pre-search sync stays cheap (no wasted work on skips).
+      // - the lazy pre-search sync stays cheap (no wasted work on skips).
       if (!this.#isDirty(db, node.id, node.data)) {
         skipped += 1;
         continue;
@@ -1037,6 +1183,13 @@ export class PluresLmStore {
         refusedDetail.push({ id: node.id, reason: "secret", kind: decision.kind });
         continue;
       }
+      // Headroom compression AFTER the gate (clean bodies only), BEFORE the
+      // write, so the embedded vector + persisted body reflect the same text.
+      const saved = this.#maybeCompress(node.data);
+      if (saved > 0) {
+        compressed += 1;
+        tokensSaved += saved;
+      }
       this.#writeNode(db, node.id, node.data);
       written += 1;
     }
@@ -1044,7 +1197,7 @@ export class PluresLmStore {
       try {
         // Best-effort: vectors written via putWithEmbedding are already
         // searchable (proven by the QA control); this call may report 0 in the
-        // alpha — its return value is NOT relied upon (see DEF-PATHB-1 notes).
+        // alpha - its return value is NOT relied upon (see DEF-PATHB-1 notes).
         db.buildVectorIndex();
       } catch {
         // Index build is best-effort: text recall still works, and the next
@@ -1052,7 +1205,14 @@ export class PluresLmStore {
         // pick the new vectors up. Never let a failed index build lose a write.
       }
     }
-    return { written, skipped, refused: refusedDetail.length, refusedDetail };
+    return {
+      written,
+      skipped,
+      refused: refusedDetail.length,
+      refusedDetail,
+      compressed,
+      tokensSaved,
+    };
   }
 
   // --- Graph surface (associative recall) ----------------------------------
@@ -1069,7 +1229,7 @@ export class PluresLmStore {
    * Run a raw procedure-IR pipeline through the SAME memoized handle and return
    * the native result (`{ nodes, aggregate?, mutated? }`). Thin pass-through:
    * callers (link-on-write, recall expansion) own the step shapes. Never throws
-   * here — lets the focused helpers below decide best-effort behavior.
+   * here - lets the focused helpers below decide best-effort behavior.
    */
   execIr(steps: unknown[]): unknown {
     return this.#ensureDb().execIr(steps);
@@ -1078,18 +1238,18 @@ export class PluresLmStore {
   /**
    * Link-on-write: create associative edges among the chunks written at/after
    * `sinceEpoch` (this sync's freshly-touched `session` nodes), so memory-core
-   * gains structure a flat store cannot — "the other memories written in the
+   * gains structure a flat store cannot - "the other memories written in the
    * same session window / same category as this one".
    *
    * The leading `filter` is MANDATORY, not cosmetic: the engine seeds every
-   * pipeline with `store.list()` (the ENTIRE store), and `auto_link` is O(n²)
+   * pipeline with `store.list()` (the ENTIRE store), and `auto_link` is O(n2)
    * over whatever set the prior step produced. Without the pre-filter,
    * `auto_link` would attempt to link the whole store (~499,500 candidate pairs
    * at 1k nodes). The filter scopes it to this sync's fresh `session` set:
    * `category == "session" AND syncEpoch >= sinceEpoch`.
    *
    * NOTE on the narrowing key (verified against `ops/filter.rs`): the engine's
-   * `>=` (`compare_numeric`) only compares JSON *numbers* — it returns false for
+   * `>=` (`compare_numeric`) only compares JSON *numbers* - it returns false for
    * a String field, with NO string-ordering fallback. So an ISO-string
    * `timestamp >= "<iso>"` filter is ALWAYS empty (proven: it dropped the set to
    * 0 and formed 0 edges). We therefore narrow on the NUMERIC `data.syncEpoch`
@@ -1099,7 +1259,7 @@ export class PluresLmStore {
    *
    * `algorithms` is passed EXPLICITLY: an empty array makes the engine default
    * to ALL THREE algorithms, including the inert lexical `semantic` (Jaccard
-   * over `data.text`/`data.tags`, which the chunk payload does not carry — so
+   * over `data.text`/`data.tags`, which the chunk payload does not carry - so
    * v1 scopes to `category` + `temporal`, the honest same-session/same-category
    * association; embedding-cosine edges are deferred, not stubbed).
    *
@@ -1194,7 +1354,7 @@ export class PluresLmStore {
    * this reader historically read back ONLY `lastRunEpoch`/`runs`, orphaning
    * the persisted salience. We now read ALL persisted fields so salience that
    * consolidate() COMPUTED + PERSISTED can actually be CONSUMED (by the
-   * salience-weighted recall sort). This ONLY reads what was persisted — it
+   * salience-weighted recall sort). This ONLY reads what was persisted - it
    * never recomputes pagerank at read time.
    */
   #readCheckpoint(db: PluresDatabaseType): {
@@ -1230,7 +1390,7 @@ export class PluresLmStore {
   /**
    * Structural-salience accessor: the set of node ids that consolidate()
    * ranked highest by PageRank and PERSISTED into the durable checkpoint
-   * (`topRanked`). Read-only pass-through to {@link #readCheckpoint} — it does
+   * (`topRanked`). Read-only pass-through to {@link #readCheckpoint} - it does
    * NOT recompute pagerank; it returns exactly what the last sweep persisted.
    *
    * Empty set when no sweep has persisted salience yet (never-run, empty
@@ -1258,14 +1418,14 @@ export class PluresLmStore {
    * memoized handle (no second handle, no thread, no timer):
    *  1. Interval guard: read the DURABLE checkpoint (`agensStateGet`); when the
    *     last sweep was < {@link CONSOLIDATE_MIN_INTERVAL_MS} ago and `force` is
-   *     not set, return `{ ran:false, reason:"too-soon" }` — cheap no-op so the
+   *     not set, return `{ ran:false, reason:"too-soon" }` - cheap no-op so the
    *     lazy `reason:"search"` path can call it on every search without cost.
    *  2. Scope: `aggregate(count)` the `category=="session"` chunks. When zero,
-   *     return `{ ran:false, reason:"empty" }` (nothing to consolidate — honest,
+   *     return `{ ran:false, reason:"empty" }` (nothing to consolidate - honest,
    *     not a fake result).
    *  3. Consolidate edges: `auto_link(category,temporal)` over the session set.
    *     Edges are deterministic (`edge::{from}::{to}`), so re-running converges
-   *     (no duplicate/explosion — proven: a 2nd sweep leaves the edge count
+   *     (no duplicate/explosion - proven: a 2nd sweep leaves the edge count
    *     unchanged). This is the materialized associative structure.
    *  4. Salience: `graph_pagerank` over the edge graph -> the top-ranked node
    *     ids (structural importance), and `graph_clusters(louvain)` -> community
@@ -1279,7 +1439,7 @@ export class PluresLmStore {
    *     interval guard can read it.
    *
    * Honest absence: a decay/eviction step that DELETES stale low-salience nodes
-   * is intentionally NOT performed — this surface never calls native `delete`
+   * is intentionally NOT performed - this surface never calls native `delete`
    * (the read+write+graph contract is augment-only), so true decay-by-removal is
    * deferred rather than faked. The monotonic `runs` counter IS the durable
    * decay/age signal a later eviction policy can build on.
@@ -1447,7 +1607,7 @@ export class PluresLmStore {
     try {
       existing = db.get(id);
     } catch {
-      // get() failed — cannot prove it is clean, so write.
+      // get() failed - cannot prove it is clean, so write.
       return true;
     }
     if (!existing || typeof existing !== "object") return true;
@@ -1466,14 +1626,14 @@ export class PluresLmStore {
       return prev.mtimeMs !== nextMtime || prev.size !== nextSize;
     }
 
-    // No comparable signal on the incoming payload — default to writing so we
+    // No comparable signal on the incoming payload - default to writing so we
     // never silently drop a real update.
     return true;
   }
 }
 
 /**
- * TEST-ONLY fixture seeding. NOT part of the shipped read-only surface — it is
+ * TEST-ONLY fixture seeding. NOT part of the shipped read-only surface - it is
  * exported solely so the recall gate can populate a throwaway store through the
  * SAME native loader (and therefore the same binding resolver) used by the read
  * path. It writes WITH embeddings so vector recall is exercised end-to-end.

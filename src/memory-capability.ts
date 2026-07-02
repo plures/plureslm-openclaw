@@ -103,6 +103,14 @@ export type PluresLmCapabilityConfig = {
    * regardless of this setting.
    */
   sourceDir?: string;
+  /**
+   * Headroom write-path compression floor (tokens). When > 0 and the native
+   * headroom surface is available, node bodies whose exact cl100k token count
+   * exceeds this floor are compacted by native `compressText` before
+   * persistence. 0 / undefined = disabled (bodies persisted verbatim). Plumbed
+   * from `plugins.entries.plureslm.config.compressAboveTokens`.
+   */
+  compressAboveTokens?: number;
 };
 
 function toStoreOptions(cfg: PluresLmCapabilityConfig): PluresLmStoreOptions {
@@ -111,6 +119,7 @@ function toStoreOptions(cfg: PluresLmCapabilityConfig): PluresLmStoreOptions {
     embeddingModel: cfg.embeddingModel,
     vectorThreshold: cfg.vectorThreshold,
     maxResults: cfg.maxResults,
+    compressAboveTokens: cfg.compressAboveTokens,
   };
 }
 
@@ -601,6 +610,7 @@ export function buildMemoryCapability(
         vectorThreshold: cfg.vectorThreshold,
         maxResults: cfg.maxResults,
         sourceDir: cfg.sourceDir,
+        compressAboveTokens: cfg.compressAboveTokens,
       };
       const { manager, store } = createPluresLmSearchManager(resolved);
       const open = store.probeOpen();
