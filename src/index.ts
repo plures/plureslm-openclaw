@@ -33,6 +33,8 @@ type PluresLmPluginConfig = {
   maxResults?: number;
   sourceDir?: string;
   compressAboveTokens?: number;
+  reactivePx?: boolean;
+  reactivePxPolicy?: string;
 };
 
 function readConfig(raw: Record<string, unknown> | undefined): PluresLmPluginConfig {
@@ -47,7 +49,10 @@ function readConfig(raw: Record<string, unknown> | undefined): PluresLmPluginCon
   const sourceDir = typeof cfg.sourceDir === "string" ? cfg.sourceDir : undefined;
   const compressAboveTokens =
     typeof cfg.compressAboveTokens === "number" ? cfg.compressAboveTokens : undefined;
-  return { dbPath, embeddingModel, vectorThreshold, maxResults, sourceDir, compressAboveTokens };
+  const reactivePx = typeof cfg.reactivePx === "boolean" ? cfg.reactivePx : undefined;
+  const reactivePxPolicy =
+    typeof cfg.reactivePxPolicy === "string" ? cfg.reactivePxPolicy : undefined;
+  return { dbPath, embeddingModel, vectorThreshold, maxResults, sourceDir, compressAboveTokens, reactivePx, reactivePxPolicy };
 }
 
 const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({

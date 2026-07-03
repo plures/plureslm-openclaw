@@ -44,6 +44,15 @@
         "description": "Token floor for native headroom write-path compression. When > 0, a node body whose exact cl100k token count exceeds this value is compacted via native compressText before persistence (logs collapse repeats; prose/code keep head+tail/signatures). The embedding is computed from the ORIGINAL text so recall stays complete regardless of how aggressively the stored body shrinks. 0 or unset = bodies stored verbatim (compression off).",
         "minimum": 0,
         "default": 0
+      },
+      "reactivePx": {
+        "type": "boolean",
+        "description": "Opt-in reactive .px on memory write. When true AND the native binding exposes subscribePx(), the store loads reactivePxPolicy into the native engine and subscribes; delivered post-write constraint violations are surfaced (warn log). Honest post-write observe/report, not a pre-write block. If enabled but the native lacks subscribePx(), the store THROWS at open (C-NOSTUB-001: never advertise a capability that isn't there). Default false.",
+        "default": false
+      },
+      "reactivePxPolicy": {
+        "type": "string",
+        "description": "Absolute path to a .px policy file loaded into the native engine when reactivePx is true. Missing/empty while reactivePx is on is a hard error (enabling reactive .px with no policy is meaningless)."
       }
     }
   }

@@ -111,6 +111,10 @@ export type PluresLmCapabilityConfig = {
    * from `plugins.entries.plureslm.config.compressAboveTokens`.
    */
   compressAboveTokens?: number;
+  /** Reactive .px on write (opt-in). Plumbed from config.reactivePx. */
+  reactivePx?: boolean;
+  /** Path to a .px policy file, plumbed from config.reactivePxPolicy. */
+  reactivePxPolicy?: string;
 };
 
 function toStoreOptions(cfg: PluresLmCapabilityConfig): PluresLmStoreOptions {
@@ -120,6 +124,8 @@ function toStoreOptions(cfg: PluresLmCapabilityConfig): PluresLmStoreOptions {
     vectorThreshold: cfg.vectorThreshold,
     maxResults: cfg.maxResults,
     compressAboveTokens: cfg.compressAboveTokens,
+    reactivePx: cfg.reactivePx,
+    reactivePxPolicy: cfg.reactivePxPolicy,
   };
 }
 
@@ -611,6 +617,8 @@ export function buildMemoryCapability(
         maxResults: cfg.maxResults,
         sourceDir: cfg.sourceDir,
         compressAboveTokens: cfg.compressAboveTokens,
+        reactivePx: cfg.reactivePx,
+        reactivePxPolicy: cfg.reactivePxPolicy,
       };
       const { manager, store } = createPluresLmSearchManager(resolved);
       const open = store.probeOpen();

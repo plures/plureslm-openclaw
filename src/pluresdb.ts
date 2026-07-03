@@ -47,7 +47,7 @@
  */
 
 import { createRequire } from "node:module";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { PluresDatabase as PluresDatabaseType } from "@plures/pluresdb-native";
 
@@ -475,6 +475,18 @@ export type PluresLmStoreOptions = {
    * off-switch, never a silent no-op (C-NOSTUB-001).
    */
   compressAboveTokens?: number;
+  /**
+   * Reactive .px on write. When true AND the native surface exposes
+   * `subscribePx`, `open()` loads `reactivePxPolicy` into the native engine and
+   * subscribes; delivered post-write PxEvents (real constraint violations) are
+   * surfaced (warn log + optional review sink). This is an HONEST post-write
+   * observe/report path - it does NOT fake a pre-write block. Off by default.
+   * If enabled but the native lacks `subscribePx`, `open()` THROWS rather than
+   * silently no-op (C-NOSTUB-001: never advertise a capability that isn't there).
+   */
+  reactivePx?: boolean;
+  /** Path to a .px policy file loaded into the native engine when reactivePx is on. */
+  reactivePxPolicy?: string;
 };
 
 type RawNode = {
@@ -564,6 +576,11 @@ export class PluresLmStore {
    * before persistence; at/below is persisted verbatim. See {@link #maybeCompress}.
    */
   readonly compressAboveTokens: number;
+  /** Reactive .px on write (opt-in). See {@link PluresLmStoreOptions.reactivePx}. */
+  readonly reactivePx: boolean;
+  readonly reactivePxPolicy: string | null;
+  /** null = not attempted; true = subscribed; false = subscribe failed. */
+  #reactiveReady: boolean | null = null;
   #db: PluresDatabaseType | null = null;
   #openError: string | null = null;
   #embedderAvailable: boolean | null = null;
@@ -586,6 +603,11 @@ export class PluresLmStore {
       typeof opts.compressAboveTokens === "number" && opts.compressAboveTokens > 0
         ? Math.floor(opts.compressAboveTokens)
         : 0;
+    this.reactivePx = opts.reactivePx === true;
+    this.reactivePxPolicy =
+      typeof opts.reactivePxPolicy === "string" && opts.reactivePxPolicy.trim().length > 0
+        ? opts.reactivePxPolicy
+        : null;
   }
 
   /** Process-local singletons keyed by resolved dbPath. */
@@ -700,7 +722,66 @@ export class PluresLmStore {
         throw new Error(this.#openError);
       }
     }
+    this.#maybeSubscribeReactivePx(this.#db);
     return this.#db;
+  }
+
+  /**
+   * Reactive .px on write (opt-in via {@link PluresLmStoreOptions.reactivePx}).
+   * Loads the policy file into the native engine and subscribes for post-write
+   * PxEvents. HONEST failure contract (C-NOSTUB-001): if reactivePx is enabled
+   * but the native binary does not expose `subscribePx`, we THROW - we never
+   * silently pretend the capability is active. Idempotent per handle.
+   */
+  #maybeSubscribeReactivePx(db: PluresDatabaseType): void {
+    if (!this.reactivePx) return;
+    if (this.#reactiveReady !== null) return; // attempted already
+    // subscribePx / pxLoadPxSource are present on the RUNTIME binary but may be
+    // absent from the linked .d.ts (declaration drift) - access defensively.
+    const nativeDb = db as unknown as {
+      subscribePx?: (cb: (ev: unknown) => void) => number;
+      pxLoadPxSource?: (text: string) => unknown;
+    };
+    if (typeof nativeDb.subscribePx !== "function") {
+      this.#reactiveReady = false;
+      throw new Error(
+        "[plureslm] reactivePx is enabled but the linked native binding does not " +
+          "expose subscribePx(). Rebuild/relink @plures/pluresdb-native with the " +
+          "reactive surface, or disable reactivePx. (C-NOSTUB-001: no hollow capability.)",
+      );
+    }
+    // Load the policy source (if provided) before subscribing so the engine has
+    // constraints to evaluate. A missing/empty policy is a hard error when
+    // reactivePx is on - enabling the feature with no policy is meaningless.
+    if (this.reactivePxPolicy) {
+      if (!existsSync(this.reactivePxPolicy)) {
+        this.#reactiveReady = false;
+        throw new Error(
+          `[plureslm] reactivePxPolicy not found: ${this.reactivePxPolicy}`,
+        );
+      }
+      if (typeof nativeDb.pxLoadPxSource !== "function") {
+        this.#reactiveReady = false;
+        throw new Error(
+          "[plureslm] reactivePxPolicy set but native lacks pxLoadPxSource().",
+        );
+      }
+      const src = readFileSync(this.reactivePxPolicy, "utf8");
+      nativeDb.pxLoadPxSource(src);
+    }
+    nativeDb.subscribePx((ev: unknown) => {
+      // HONEST post-write observe/report: surface real constraint violations at
+      // warn level. This is NOT a pre-write block - it reports what the native
+      // engine actually delivers after a write.
+      try {
+        // eslint-disable-next-line no-console
+        console.warn("[plureslm][reactive-px]", JSON.stringify(ev));
+      } catch {
+        // eslint-disable-next-line no-console
+        console.warn("[plureslm][reactive-px] (unserializable event)");
+      }
+    });
+    this.#reactiveReady = true;
   }
 
   #actorId(): string {
