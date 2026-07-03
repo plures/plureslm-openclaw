@@ -38,6 +38,12 @@
       "sourceDir": {
         "type": "string",
         "description": "Optional absolute path to a directory of memory-doc source files (markdown/text). When set, a force:true sync rescans it and ingests its files as memory-source nodes. When omitted, only session transcripts passed via sessionFiles are ingested."
+      },
+      "compressAboveTokens": {
+        "type": "integer",
+        "description": "Token floor for native headroom write-path compression. When > 0, a node body whose exact cl100k token count exceeds this value is compacted via native compressText before persistence (logs collapse repeats; prose/code keep head+tail/signatures). The embedding is computed from the ORIGINAL text so recall stays complete regardless of how aggressively the stored body shrinks. 0 or unset = bodies stored verbatim (compression off).",
+        "minimum": 0,
+        "default": 0
       }
     }
   }
