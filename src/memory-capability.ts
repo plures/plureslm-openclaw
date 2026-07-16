@@ -47,8 +47,15 @@ import { type Dirent, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, extname, join, relative } from "node:path";
 
 import type {
+  MemoryFlushPlanResolver,
   MemoryPluginCapability,
   MemoryPluginRuntime,
+  MemoryPromptSectionBuilder,
+} from "openclaw/plugin-sdk/memory-core";
+import {
+  DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR,
+  parseNonNegativeByteSize,
+  resolveCronStyleNow,
 } from "openclaw/plugin-sdk/memory-core";
 
 import { PluresLmStore, type PluresLmStoreOptions } from "./pluresdb.js";
@@ -89,6 +96,108 @@ type ReadResult = {
 
 const BACKEND = "builtin" as const;
 const PROVIDER_LABEL = "plureslm";
+const DEFAULT_FLUSH_SOFT_THRESHOLD_TOKENS = 4000;
+const DEFAULT_FLUSH_TRANSCRIPT_BYTES = 2 * 1024 * 1024;
+const DEFAULT_FLUSH_PROMPT =
+  "Summarize and persist durable memories from this session into memory/YYYY-MM-DD.md. Keep decisions, preferences, follow-ups, blockers, and high-signal context. Output NO_REPLY when complete.";
+const DEFAULT_FLUSH_SYSTEM_PROMPT =
+  "You are a memory flush assistant. Persist durable, factual, privacy-safe memory notes. Do not include secrets. Output NO_REPLY when complete.";
+
+function normalizeNonNegativeInt(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const int = Math.floor(value);
+  return int >= 0 ? int : null;
+}
+
+function ensureNoReplyHint(text: string): string {
+  return text.includes("NO_REPLY")
+    ? text
+    : `${text}\n\nOutput NO_REPLY when complete.`;
+}
+
+function appendCurrentTimeLine(text: string, timeLine: string): string {
+  const trimmed = text.trimEnd();
+  if (!trimmed) return timeLine;
+  return trimmed.includes("Current time:")
+    ? trimmed
+    : `${trimmed}\n${timeLine}`;
+}
+
+function formatDateStampInTimezone(nowMs: number, timezone?: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(nowMs));
+}
+
+const buildPromptSection: MemoryPromptSectionBuilder = ({
+  availableTools,
+  citationsMode,
+}) => {
+  const hasMemorySearch = availableTools.has("memory_search");
+  const hasMemoryGet = availableTools.has("memory_get");
+  if (!hasMemorySearch && !hasMemoryGet) return [];
+
+  let toolGuidance: string;
+  if (hasMemorySearch && hasMemoryGet) {
+    toolGuidance =
+      "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search, then use memory_get to pull only the needed lines. If low confidence after search, say you checked.";
+  } else if (hasMemorySearch) {
+    toolGuidance =
+      "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search and answer from the matching results. If low confidence after search, say you checked.";
+  } else {
+    toolGuidance =
+      "Before answering anything about prior work, decisions, dates, people, preferences, or todos that already point to a specific memory file or note: run memory_get to pull only the needed lines. If low confidence after reading them, say you checked.";
+  }
+
+  const lines = ["## Memory Recall", toolGuidance];
+  if (citationsMode === "off") {
+    lines.push(
+      "Citations are disabled: do not mention file paths or line numbers in replies unless the user explicitly asks.",
+    );
+  } else {
+    lines.push(
+      "Citations: include Source: <path#line> when it helps the user verify memory snippets.",
+    );
+  }
+  lines.push("");
+  return lines;
+};
+
+const buildMemoryFlushPlan: MemoryFlushPlanResolver = (params = {}) => {
+  const cfg = params.cfg;
+  const defaults = cfg?.agents?.defaults?.compaction?.memoryFlush;
+  if (defaults?.enabled === false) return null;
+
+  const nowMs = typeof params.nowMs === "number" ? params.nowMs : Date.now();
+  const { timeLine, userTimezone } = resolveCronStyleNow(cfg ?? {}, nowMs);
+  const dateStamp = formatDateStampInTimezone(nowMs, userTimezone);
+  const promptBase = (defaults?.prompt?.trim() || DEFAULT_FLUSH_PROMPT).replaceAll(
+    "YYYY-MM-DD",
+    dateStamp,
+  );
+  const systemPromptBase = (
+    defaults?.systemPrompt?.trim() || DEFAULT_FLUSH_SYSTEM_PROMPT
+  ).replaceAll("YYYY-MM-DD", dateStamp);
+
+  return {
+    softThresholdTokens:
+      normalizeNonNegativeInt(defaults?.softThresholdTokens) ??
+      DEFAULT_FLUSH_SOFT_THRESHOLD_TOKENS,
+    forceFlushTranscriptBytes:
+      parseNonNegativeByteSize(defaults?.forceFlushTranscriptBytes) ??
+      DEFAULT_FLUSH_TRANSCRIPT_BYTES,
+    reserveTokensFloor:
+      normalizeNonNegativeInt(cfg?.agents?.defaults?.compaction?.reserveTokensFloor) ??
+      DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR,
+    model: defaults?.model?.trim() || undefined,
+    prompt: appendCurrentTimeLine(ensureNoReplyHint(promptBase), timeLine),
+    systemPrompt: ensureNoReplyHint(systemPromptBase),
+    relativePath: `memory/${dateStamp}.md`,
+  };
+};
 
 export type PluresLmCapabilityConfig = {
   dbPath: string;
@@ -632,5 +741,9 @@ export function buildMemoryCapability(
     },
   };
 
-  return { runtime };
+  return {
+    promptBuilder: buildPromptSection,
+    flushPlanResolver: buildMemoryFlushPlan,
+    runtime,
+  };
 }

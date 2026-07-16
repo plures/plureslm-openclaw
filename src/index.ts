@@ -6,9 +6,9 @@
  * manager's `sync()` ingests session transcripts (and, on a forced rescan, an
  * optional configured `sourceDir`) into the store so they are recallable. The
  * write path additionally applies native HEADROOM token-compression to
- * oversized node bodies before persistence when `compressAboveTokens > 0`. No
- * flush-plan resolver and no prompt-section takeover — only the exclusive
- * memory capability runtime.
+ * oversized node bodies before persistence when `compressAboveTokens > 0`.
+ * The registered capability now owns the full memory seam: prompt recall
+ * guidance, memory-flush planning, and the exclusive runtime/search manager.
  *
  * Config (plugins.entries.plureslm.config):
  *   - dbPath:        absolute path to the PluresDB store directory
