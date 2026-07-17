@@ -1,0 +1,17 @@
+{
+  "name": "plureslm-scout-hooks",
+  "description": "Inject PluresLM autoRecall context into Scout/Copilot sessions via native prompt hooks",
+  "version": "0.1.0",
+  "mcpServers": "./.mcp.json",
+  "author": {
+    "name": "Plures"
+  },
+  "license": "AGPL-3.0-or-later",
+  "keywords": [
+    "plureslm",
+    "memory",
+    "autorecall",
+    "praxis",
+    "scout"
+  ]
+}

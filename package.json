@@ -17,6 +17,8 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
+    "scout-hooks",
+    "scout-mcp",
     "openclaw.plugin.json",
     "README.md",
     "LICENSE"
