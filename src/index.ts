@@ -24,7 +24,10 @@
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
-import { buildMemoryCapability } from "./memory-capability.js";
+import {
+  buildMemoryCapability,
+  createPluresLmSearchManager,
+} from "./memory-capability.js";
 
 type PluresLmPluginConfig = {
   dbPath?: string;
@@ -55,6 +58,128 @@ function readConfig(raw: Record<string, unknown> | undefined): PluresLmPluginCon
   return { dbPath, embeddingModel, vectorThreshold, maxResults, sourceDir, compressAboveTokens, reactivePx, reactivePxPolicy };
 }
 
+const MemorySearchSchema = {
+  type: "object",
+  properties: {
+    query: { type: "string" },
+    maxResults: { type: "integer", minimum: 1 },
+    minScore: { type: "number" },
+    corpus: { type: "string", enum: ["memory", "sessions", "all", "wiki"] },
+  },
+  required: ["query"],
+  additionalProperties: false,
+} as const;
+
+const MemoryGetSchema = {
+  type: "object",
+  properties: {
+    path: { type: "string" },
+    from: { type: "integer", minimum: 1 },
+    lines: { type: "integer", minimum: 1 },
+    corpus: { type: "string", enum: ["memory", "all", "wiki"] },
+  },
+  required: ["path"],
+  additionalProperties: false,
+} as const;
+
+function toolJson(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
+
+function sourceMatchesCorpus(
+  source: "memory" | "sessions" | undefined,
+  corpus: unknown,
+): boolean {
+  if (corpus === undefined || corpus === "all") return true;
+  if (corpus === "wiki") return false;
+  if (corpus === "memory") return source !== "sessions";
+  if (corpus === "sessions") return source === "sessions";
+  return true;
+}
+
+function createPluresLmSearchTool(cfg: PluresLmPluginConfig) {
+  if (!cfg.dbPath) return null;
+  return {
+    label: "PluresLM Memory Search",
+    name: "memory_search",
+    description:
+      "Mandatory recall step: semantically search PluresLM memory before answering questions about prior work, decisions, dates, people, preferences, or todos.",
+    parameters: MemorySearchSchema,
+    execute: async (_toolCallId: string, toolParams: Record<string, unknown>) => {
+      const query = typeof toolParams.query === "string" ? toolParams.query.trim() : "";
+      if (!query) {
+        return toolJson({ disabled: true, unavailable: true, error: "query required" });
+      }
+
+      const maxResults =
+        typeof toolParams.maxResults === "number" && Number.isFinite(toolParams.maxResults)
+          ? Math.max(1, Math.floor(toolParams.maxResults))
+          : cfg.maxResults;
+      const minScore =
+        typeof toolParams.minScore === "number" && Number.isFinite(toolParams.minScore)
+          ? toolParams.minScore
+          : undefined;
+
+      const { manager } = createPluresLmSearchManager({
+        ...cfg,
+        embeddingModel: cfg.embeddingModel ?? "BAAI/bge-small-en-v1.5",
+      });
+      const rawResults = await manager.search(query, { maxResults, minScore });
+      const results = rawResults
+        .filter((result) => sourceMatchesCorpus(result.source, toolParams.corpus))
+        .map((result) => ({
+          path: result.path,
+          startLine: result.startLine,
+          endLine: result.endLine,
+          score: result.score,
+          vectorScore: result.vectorScore,
+          textScore: result.textScore,
+          source: result.source,
+          citation: result.citation,
+          snippet: result.snippet,
+        }));
+      return toolJson({ provider: "plureslm", query, count: results.length, results });
+    },
+  };
+}
+
+function createPluresLmGetTool(cfg: PluresLmPluginConfig) {
+  if (!cfg.dbPath) return null;
+  return {
+    label: "PluresLM Memory Get",
+    name: "memory_get",
+    description: "Read an exact PluresLM memory excerpt by path returned from memory_search.",
+    parameters: MemoryGetSchema,
+    execute: async (_toolCallId: string, toolParams: Record<string, unknown>) => {
+      const relPath = typeof toolParams.path === "string" ? toolParams.path.trim() : "";
+      if (!relPath) {
+        return toolJson({ disabled: true, unavailable: true, error: "path required" });
+      }
+      if (toolParams.corpus === "wiki") {
+        return toolJson({
+          disabled: true,
+          unavailable: true,
+          error: "wiki corpus is not provided by plureslm",
+        });
+      }
+      const from =
+        typeof toolParams.from === "number" && Number.isFinite(toolParams.from)
+          ? Math.max(1, Math.floor(toolParams.from))
+          : undefined;
+      const lines =
+        typeof toolParams.lines === "number" && Number.isFinite(toolParams.lines)
+          ? Math.max(1, Math.floor(toolParams.lines))
+          : undefined;
+      const { manager } = createPluresLmSearchManager({
+        ...cfg,
+        embeddingModel: cfg.embeddingModel ?? "BAAI/bge-small-en-v1.5",
+      });
+      const result = await manager.readFile({ relPath, from, lines });
+      return toolJson({ provider: "plureslm", ...result });
+    },
+  };
+}
+
 const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
   id: "plureslm",
   name: "PluresLM Memory",
@@ -72,6 +197,8 @@ const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
       );
     }
     api.registerMemoryCapability(buildMemoryCapability(cfg));
+    api.registerTool(() => createPluresLmSearchTool(cfg), { names: ["memory_search"] });
+    api.registerTool(() => createPluresLmGetTool(cfg), { names: ["memory_get"] });
   },
 });
 
