@@ -27,6 +27,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   buildMemoryCapability,
   createPluresLmSearchManager,
+  type PluresLmCapabilityConfig,
 } from "./memory-capability.js";
 
 type PluresLmPluginConfig = {
@@ -82,8 +83,25 @@ const MemoryGetSchema = {
   additionalProperties: false,
 } as const;
 
-function toolJson(value: unknown): string {
-  return JSON.stringify(value, null, 2);
+function toolJson(value: unknown) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    details: value,
+  };
+}
+
+function resolveCapabilityConfig(cfg: PluresLmPluginConfig): PluresLmCapabilityConfig | null {
+  if (!cfg.dbPath) return null;
+  return {
+    dbPath: cfg.dbPath,
+    embeddingModel: cfg.embeddingModel ?? "BAAI/bge-small-en-v1.5",
+    vectorThreshold: cfg.vectorThreshold,
+    maxResults: cfg.maxResults,
+    sourceDir: cfg.sourceDir,
+    compressAboveTokens: cfg.compressAboveTokens,
+    reactivePx: cfg.reactivePx,
+    reactivePxPolicy: cfg.reactivePxPolicy,
+  };
 }
 
 function sourceMatchesCorpus(
@@ -120,12 +138,14 @@ function createPluresLmSearchTool(cfg: PluresLmPluginConfig) {
           ? toolParams.minScore
           : undefined;
 
-      const { manager } = createPluresLmSearchManager({
-        ...cfg,
-        embeddingModel: cfg.embeddingModel ?? "BAAI/bge-small-en-v1.5",
-      });
-      const rawResults = await manager.search(query, { maxResults, minScore });
+      const resolved = resolveCapabilityConfig(cfg);
+      if (!resolved) {
+        return toolJson({ disabled: true, unavailable: true, error: "dbPath not configured" });
+      }
+      const { manager } = createPluresLmSearchManager(resolved);
+      const rawResults = await manager.search(query, { maxResults });
       const results = rawResults
+        .filter((result) => minScore === undefined || result.score >= minScore)
         .filter((result) => sourceMatchesCorpus(result.source, toolParams.corpus))
         .map((result) => ({
           path: result.path,
@@ -170,10 +190,11 @@ function createPluresLmGetTool(cfg: PluresLmPluginConfig) {
         typeof toolParams.lines === "number" && Number.isFinite(toolParams.lines)
           ? Math.max(1, Math.floor(toolParams.lines))
           : undefined;
-      const { manager } = createPluresLmSearchManager({
-        ...cfg,
-        embeddingModel: cfg.embeddingModel ?? "BAAI/bge-small-en-v1.5",
-      });
+      const resolved = resolveCapabilityConfig(cfg);
+      if (!resolved) {
+        return toolJson({ disabled: true, unavailable: true, error: "dbPath not configured" });
+      }
+      const { manager } = createPluresLmSearchManager(resolved);
       const result = await manager.readFile({ relPath, from, lines });
       return toolJson({ provider: "plureslm", ...result });
     },

@@ -124,7 +124,8 @@ export function createPluresLmMemoryService(config: PluresLmServiceConfig) {
     async sync(params: Record<string, unknown> = {}): Promise<unknown> {
       const reason = typeof params.reason === "string" ? params.reason : "service";
       const force = optionalBool(params.force) ?? false;
-      return await shared.manager.sync({ reason, force });
+      await shared.manager.sync({ reason, force });
+      return { ok: true, provider: "plureslm", synced: true };
     },
   };
 }
