@@ -47,7 +47,8 @@
     "test:p3p4-verify": "tsx test/p3p4-verify.driver.mts",
     "test:p2-salience": "tsx test/p2-salience-recall.gate.mts",
     "test:vitest": "vitest run",
-    "gate": "tsc -p tsconfig.json && tsx test/recall.gate.mts && tsx test/p3p4.gate.mts"
+    "gate": "tsc -p tsconfig.json && tsx test/recall.gate.mts && tsx test/p3p4.gate.mts",
+    "test:service": "tsx test/service-api.gate.mts"
   },
   "dependencies": {
     "@plures/pluresdb-native": "file:../pluresdb/crates/pluresdb-node"
