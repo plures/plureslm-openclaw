@@ -59,6 +59,7 @@ import {
 } from "openclaw/plugin-sdk/memory-core";
 
 import { PluresLmStore, type PluresLmStoreOptions } from "./pluresdb.js";
+import { createPluresLmServiceSearchManager } from "./service-client.js";
 
 // NOTE: `MemorySearchResult`, `MemoryReadResult`, and `MemoryProviderStatus`
 // are NOT re-exported by the `openclaw/plugin-sdk/memory-core` subpath (they
@@ -708,15 +709,19 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
  * the host degrades gracefully rather than crashing.
  */
 export function buildMemoryCapability(
-  cfg: Partial<PluresLmCapabilityConfig>,
+  cfg: Partial<PluresLmCapabilityConfig> & { serviceUrl?: string },
 ): MemoryPluginCapability {
   const runtime: MemoryPluginRuntime = {
     async getMemorySearchManager() {
+      if (cfg.serviceUrl) {
+        const { manager } = createPluresLmServiceSearchManager({ serviceUrl: cfg.serviceUrl });
+        return { manager };
+      }
       if (!cfg.dbPath) {
         return {
           manager: null,
           error:
-            "[plureslm] no dbPath configured (plugins.entries.plureslm.config.dbPath); memory capability is inert.",
+            "[plureslm] no serviceUrl or dbPath configured (plugins.entries.plureslm.config.serviceUrl or dbPath); memory capability is inert.",
         };
       }
       const resolved: PluresLmCapabilityConfig = {
