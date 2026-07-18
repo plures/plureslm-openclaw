@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import plugin from "../src/index.js";
 import { startPluresLmHttpService } from "../src/service.js";
@@ -20,6 +21,16 @@ function parseToolResult(result: unknown): Record<string, unknown> {
   assert.equal(typeof first.text, "string");
   return JSON.parse(first.text as string) as Record<string, unknown>;
 }
+
+const manifestPath = join(dirname(dirname(fileURLToPath(import.meta.url))), "openclaw.plugin.json");
+const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+  contracts?: { tools?: unknown };
+};
+assert.deepEqual(
+  manifest.contracts?.tools,
+  ["memory_get", "memory_search"],
+  "plugin manifest must declare memory tools so OpenClaw accepts registerTool() at runtime",
+);
 
 const root = await mkdtemp(join(tmpdir(), "plureslm-service-plugin-gate-"));
 const dbPath = join(root, "store");

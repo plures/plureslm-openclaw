@@ -4,7 +4,11 @@
   "description": "Read+write memory capability for OpenClaw backed by a PluresLM service over PluresDB: recall/search/status plus sync() ingest of session transcripts (and an optional configured source directory) via the exclusive memory capability slot.",
   "kind": "memory",
   "contracts": {
-    "memoryCapability": true
+    "memoryCapability": true,
+    "tools": [
+      "memory_get",
+      "memory_search"
+    ]
   },
   "activation": {
     "onStartup": true
