@@ -30,3 +30,6 @@ export {
   createPluresLmSearchManager,
 } from "./memory-capability.js";
 export type { PluresLmCapabilityConfig } from "./memory-capability.js";
+
+export { createPluresLmServiceSearchManager } from "./service-client.js";
+export type { PluresLmServiceClientConfig } from "./service-client.js";

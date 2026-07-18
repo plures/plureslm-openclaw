@@ -27,10 +27,13 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   buildMemoryCapability,
   createPluresLmSearchManager,
+  type PluresLmCapabilityConfig,
 } from "./memory-capability.js";
+import { createPluresLmServiceSearchManager } from "./service-client.js";
 
 type PluresLmPluginConfig = {
   dbPath?: string;
+  serviceUrl?: string;
   embeddingModel?: string;
   vectorThreshold?: number;
   maxResults?: number;
@@ -43,6 +46,7 @@ type PluresLmPluginConfig = {
 function readConfig(raw: Record<string, unknown> | undefined): PluresLmPluginConfig {
   const cfg = raw ?? {};
   const dbPath = typeof cfg.dbPath === "string" ? cfg.dbPath : undefined;
+  const serviceUrl = typeof cfg.serviceUrl === "string" ? cfg.serviceUrl : undefined;
   const embeddingModel =
     typeof cfg.embeddingModel === "string" ? cfg.embeddingModel : undefined;
   const vectorThreshold =
@@ -55,7 +59,7 @@ function readConfig(raw: Record<string, unknown> | undefined): PluresLmPluginCon
   const reactivePx = typeof cfg.reactivePx === "boolean" ? cfg.reactivePx : undefined;
   const reactivePxPolicy =
     typeof cfg.reactivePxPolicy === "string" ? cfg.reactivePxPolicy : undefined;
-  return { dbPath, embeddingModel, vectorThreshold, maxResults, sourceDir, compressAboveTokens, reactivePx, reactivePxPolicy };
+  return { dbPath, serviceUrl, embeddingModel, vectorThreshold, maxResults, sourceDir, compressAboveTokens, reactivePx, reactivePxPolicy };
 }
 
 const MemorySearchSchema = {
@@ -82,8 +86,25 @@ const MemoryGetSchema = {
   additionalProperties: false,
 } as const;
 
-function toolJson(value: unknown): string {
-  return JSON.stringify(value, null, 2);
+function toolJson(value: unknown) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    details: value,
+  };
+}
+
+function resolveCapabilityConfig(cfg: PluresLmPluginConfig): PluresLmCapabilityConfig | null {
+  if (!cfg.dbPath) return null;
+  return {
+    dbPath: cfg.dbPath,
+    embeddingModel: cfg.embeddingModel ?? "BAAI/bge-small-en-v1.5",
+    vectorThreshold: cfg.vectorThreshold,
+    maxResults: cfg.maxResults,
+    sourceDir: cfg.sourceDir,
+    compressAboveTokens: cfg.compressAboveTokens,
+    reactivePx: cfg.reactivePx,
+    reactivePxPolicy: cfg.reactivePxPolicy,
+  };
 }
 
 function sourceMatchesCorpus(
@@ -98,7 +119,7 @@ function sourceMatchesCorpus(
 }
 
 function createPluresLmSearchTool(cfg: PluresLmPluginConfig) {
-  if (!cfg.dbPath) return null;
+  if (!cfg.serviceUrl && !cfg.dbPath) return null;
   return {
     label: "PluresLM Memory Search",
     name: "memory_search",
@@ -120,12 +141,16 @@ function createPluresLmSearchTool(cfg: PluresLmPluginConfig) {
           ? toolParams.minScore
           : undefined;
 
-      const { manager } = createPluresLmSearchManager({
-        ...cfg,
-        embeddingModel: cfg.embeddingModel ?? "BAAI/bge-small-en-v1.5",
-      });
-      const rawResults = await manager.search(query, { maxResults, minScore });
+      const directConfig = resolveCapabilityConfig(cfg);
+      if (!cfg.serviceUrl && !directConfig) {
+        return toolJson({ disabled: true, unavailable: true, error: "serviceUrl or dbPath not configured" });
+      }
+      const { manager } = cfg.serviceUrl
+        ? createPluresLmServiceSearchManager({ serviceUrl: cfg.serviceUrl })
+        : createPluresLmSearchManager(directConfig!);
+      const rawResults = await manager.search(query, { maxResults });
       const results = rawResults
+        .filter((result) => minScore === undefined || result.score >= minScore)
         .filter((result) => sourceMatchesCorpus(result.source, toolParams.corpus))
         .map((result) => ({
           path: result.path,
@@ -144,7 +169,7 @@ function createPluresLmSearchTool(cfg: PluresLmPluginConfig) {
 }
 
 function createPluresLmGetTool(cfg: PluresLmPluginConfig) {
-  if (!cfg.dbPath) return null;
+  if (!cfg.serviceUrl && !cfg.dbPath) return null;
   return {
     label: "PluresLM Memory Get",
     name: "memory_get",
@@ -170,10 +195,13 @@ function createPluresLmGetTool(cfg: PluresLmPluginConfig) {
         typeof toolParams.lines === "number" && Number.isFinite(toolParams.lines)
           ? Math.max(1, Math.floor(toolParams.lines))
           : undefined;
-      const { manager } = createPluresLmSearchManager({
-        ...cfg,
-        embeddingModel: cfg.embeddingModel ?? "BAAI/bge-small-en-v1.5",
-      });
+      const directConfig = resolveCapabilityConfig(cfg);
+      if (!cfg.serviceUrl && !directConfig) {
+        return toolJson({ disabled: true, unavailable: true, error: "serviceUrl or dbPath not configured" });
+      }
+      const { manager } = cfg.serviceUrl
+        ? createPluresLmServiceSearchManager({ serviceUrl: cfg.serviceUrl })
+        : createPluresLmSearchManager(directConfig!);
       const result = await manager.readFile({ relPath, from, lines });
       return toolJson({ provider: "plureslm", ...result });
     },
@@ -187,13 +215,17 @@ const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
     "Read+write memory capability for OpenClaw backed by @plures/pluresdb-native.",
   register(api) {
     const cfg = readConfig(api.pluginConfig);
-    if (!cfg.dbPath) {
-      api.logger.warn(
-        "[plureslm] no dbPath configured; registering an inert memory capability.",
+    if (cfg.serviceUrl) {
+      api.logger.info(
+        `[plureslm] registering read+write memory capability through service ${cfg.serviceUrl}`,
       );
-    } else {
+    } else if (cfg.dbPath) {
       api.logger.info(
         `[plureslm] registering read+write memory capability over ${cfg.dbPath}`,
+      );
+    } else {
+      api.logger.warn(
+        "[plureslm] no serviceUrl or dbPath configured; registering an inert memory capability.",
       );
     }
     api.registerMemoryCapability(buildMemoryCapability(cfg));

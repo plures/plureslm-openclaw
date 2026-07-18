@@ -57,6 +57,12 @@ function optionalBool(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+function optionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  return strings.length > 0 ? strings : undefined;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -124,7 +130,9 @@ export function createPluresLmMemoryService(config: PluresLmServiceConfig) {
     async sync(params: Record<string, unknown> = {}): Promise<unknown> {
       const reason = typeof params.reason === "string" ? params.reason : "service";
       const force = optionalBool(params.force) ?? false;
-      return await shared.manager.sync({ reason, force });
+      const sessionFiles = optionalStringArray(params.sessionFiles);
+      await shared.manager.sync({ reason, force, sessionFiles });
+      return { ok: true, provider: "plureslm", synced: true };
     },
   };
 }
