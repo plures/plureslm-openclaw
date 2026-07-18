@@ -1,7 +1,7 @@
 {
   "id": "plureslm",
   "name": "PluresLM Memory",
-  "description": "Read+write memory capability for OpenClaw backed by @plures/pluresdb-native: recall/search/status plus sync() ingest of session transcripts (and an optional configured source directory) into the store, via the exclusive memory capability slot.",
+  "description": "Read+write memory capability for OpenClaw backed by a PluresLM service over PluresDB: recall/search/status plus sync() ingest of session transcripts (and an optional configured source directory) via the exclusive memory capability slot.",
   "kind": "memory",
   "contracts": {
     "memoryCapability": true
@@ -13,9 +13,13 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "serviceUrl": {
+        "type": "string",
+        "description": "Preferred PluresLM memory service base URL (for example http://127.0.0.1:38947). When set, OpenClaw tools and memory capability call the service instead of opening the PluresDB store in-process."
+      },
       "dbPath": {
         "type": "string",
-        "description": "Absolute path to the PluresDB store directory (the folder containing conf/db/blobs/snap.*). When omitted, the memory capability stays inert and reports unavailable."
+        "description": "Legacy/direct-mode absolute path to the PluresDB store directory (the folder containing conf/db/blobs/snap.*). Use only when no serviceUrl is available; shared/live stores should be owned by the PluresLM service, not by this adapter. When both serviceUrl and dbPath are omitted, the memory capability stays inert and reports unavailable."
       },
       "embeddingModel": {
         "type": "string",
