@@ -3,7 +3,7 @@
 - **Status:** Proposed (design only — no code changed by this ADR)
 - **Date:** 2026-07-23
 - **Scope:** `src/service.ts` (`createPluresLmHttpHandler`/`startPluresLmHttpService`) and `src/service-client.ts`, as the shared local HTTP boundary consumed today by the OpenClaw `plureslm` plugin (ADR-0004) and proposed for a second first-party consumer, Scout's `scout-mcp` (ADR-0003). A third integration, `pares-agens` (ADR-0016 in that repo), is also expected to become a client of this same service.
-- **Decision (proposed):** Add an opt-in-by-default, minimal bearer-token authentication mechanism to the local HTTP service. The service generates or accepts a per-instance shared secret at startup, requires it on every request via an `Authorization: Bearer <token>` header (or equivalent), and rejects unauthenticated requests with `401`. `src/service-client.ts` gains a `token`/`serviceToken` config option that sends the header automatically. Existing consumers (OpenClaw plugin) and proposed consumers (Scout, pares-agens) adopt this by passing the token through their respective configuration surfaces.
+- **Decision (proposed):** Add a require-by-default, minimal bearer-token authentication mechanism to the local HTTP service, with a short, explicit, visible opt-out for existing deployments during rollout. The service generates or accepts a per-instance shared secret at startup, requires it on every request via an `Authorization: Bearer <token>` header (or equivalent), and rejects unauthenticated requests with `401`. `src/service-client.ts` gains a `token`/`serviceToken` config option that sends the header automatically. Existing consumers (OpenClaw plugin) and proposed consumers (Scout, pares-agens) adopt this by passing the token through their respective configuration surfaces.
 
 ## Context and evidence
 
@@ -61,7 +61,7 @@ Consumers
     e.g. a new `serviceToken` field, or from the token file path when the
     plugin and service are launched by the same trusted launcher.
   - Scout `scout-mcp` (ADR-0003, once implemented): `--service-token` /
-    PLURESLM_SCOUT_SERVICE_TOKEN` alongside the already-proposed
+    `PLURESLM_SCOUT_SERVICE_TOKEN` alongside the already-proposed
     `--service-url`.
   - pares-agens (tracked separately in that repo): expected to configure the
     same token/service-URL pair through its own config surface; this ADR
@@ -78,7 +78,7 @@ Consumers
 
 ## Backward compatibility and rollout
 
-- This is described as **opt-in-by-default** in the summary above for consistency with existing zero-config deployments, but the design intent is a **short opt-out window, not a permanent bypass**: `service-cli.ts` should default to requiring a token (auto-generating one and writing the token file) unless an explicit `--no-auth` / `PLURESLM_SERVICE_ALLOW_UNAUTHENTICATED=1` escape hatch is passed, so that upgrading an existing deployment does not silently break it without an operator seeing the new required-token behavior at least once (the token file path is printed on every startup).
+- This is **require-by-default**, matching the summary decision above: `service-cli.ts` defaults to requiring a token (auto-generating one and writing the token file) unless an explicit `--no-auth` / `PLURESLM_SERVICE_ALLOW_UNAUTHENTICATED=1` escape hatch is passed. The escape hatch exists only as a **short, explicit opt-out window, not a permanent bypass**, so that upgrading an existing deployment does not silently break it without an operator seeing the new required-token behavior at least once (the token file path is printed on every startup).
 - Existing single-consumer deployments (OpenClaw plugin + service on one machine, same launcher) get a generated token file automatically; the plugin's service-client config needs one new field pointing at that token or its file path. This is a breaking-if-ignored change for any deployment that upgrades the service without also updating the client config — that tradeoff is intentional and matches ADR-0003/ADR-0004's framing of the current gap as unacceptable to carry forward unchanged into a multi-consumer world.
 - `GET /health` staying unauthenticated preserves today's "process liveness only" semantics (ADR-0004) for simple external monitoring/supervision use, while `GET /status` moves behind auth because it returns store/model/vector details that are more than bare liveness.
 
