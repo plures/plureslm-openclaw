@@ -79,9 +79,7 @@ The minimum usable service-backed shape is:
 
 | Setting | Contract |
 | --- | --- |
-| `serviceUrl` | Preferred base URL. The plugin uses it for capability-manager and tool operations rather than opening PluresDB itself. Trailing slashes are normalized. |
-| `dbPath` | Required by the service and required for direct mode. It is an absolute store directory. If neither `serviceUrl` nor usable `dbPath` exists, the capability is inert/unavailable. |
-| `embeddingModel` | Defaults to `BAAI/bge-small-en-v1.5`. The service supplies this default when omitted. |
+| `dbPath` | Required for direct mode. The service itself must be started with a `dbPath`, but when `serviceUrl` is configured this plugin does not require `dbPath`. It is an absolute store directory. If neither `serviceUrl` nor usable `dbPath` exists, the capability is inert/unavailable. |
 | `vectorThreshold`, `maxResults` | Recall controls. `maxResults` is also the default for tool/service search. Tool callers may request a positive integer limit. |
 | `sourceDir` | Optional memory-document source. A forced sync rescans it; session files supplied to `sync()` are ingested independently. |
 | `compressAboveTokens` | `0`/unset disables write-path headroom compression; positive values enable it for oversized stored bodies. |
