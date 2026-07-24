@@ -18,7 +18,7 @@ Two independent Scout-facing integrations live in this repo, both added in commi
 
 2. **`scout-mcp/plureslm-mcp.mjs`** — a dependency-free stdio MCP/JSON-RPC server (~600 lines, read in full for this ADR).
    - `readConfig()` takes `--db-path`/`PLURESLM_DB_PATH` and `--repo-root`/`PLURESLM_REPO_ROOT`, then `getStore()` does `await import(pathToFileURL(resolve(repoRoot, "dist", "pluresdb.js")))` and calls `PluresLmStore.open({ dbPath, ... })` **directly** — no HTTP client, no `serviceUrl` option exists anywhere in this file.
-   - It exposes `plures_status`, `plures_native_status`, `plures_recall`, `plures_read`, `plures_sync`, plus `px_validate`/`px_compile`/`px_load_policy`/`px_insert_constraint`/`px_list_constraints`/`px_check_action`/`px_explain_violation` (Praxis policy tools gated behind `PLURESLM_PX_NAPI_MODULE`).
+   - It exposes `plures_status`, `plures_recall`, `plures_read`, `plures_sync`, plus `px_validate`/`px_compile` (Praxis tools gated behind `PLURESLM_PX_NAPI_MODULE`).
    - `scout-mcp/README.md`'s example Scout config points `-DbPath` at `C:\Users\kbristol\.copilot\plugin-data\plureslm\scout-db` — a **separate** store path from whatever OpenClaw's plugin is configured with. That avoids today's native-lock collision only by accident of using a different directory, not by design.
 
 ### The seam this ADR targets
