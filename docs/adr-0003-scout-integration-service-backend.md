@@ -12,7 +12,7 @@
 Two independent Scout-facing integrations live in this repo, both added in commit `d4e2890` ("feat: add Scout integration for PluresLM autorecall") and referenced from `README.md`/plugin manifests:
 
 1. **`scout-hooks/`** — a Scout/Copilot native hook plugin.
-   - `hooks/plureslm-autorecall.mjs` (thin wrapper) + `hooks/plureslm-autorecall-core.mjs` (pure logic: prompt/transcript parsing, recall-heuristic gating, context formatting) run on Scout's `UserPromptSubmit` seam.
+   - `hooks/plureslm-autorecall.mjs` (prompt/transcript parsing, recall-heuristic gating, context formatting) runs on Scout's `UserPromptSubmit` seam.
    - Per `scout-hooks/README.md`, the hook requires `PLURESLM_DB_PATH` and calls into the built `dist/pluresdb.js` runtime — i.e. it opens a `PluresLmStore` **directly**, in-process, the same way the legacy "direct-store compatibility mode" plugin does in ADR-0002.
    - The hook also bundles a `.mcp.json` so Scout can auto-discover an MCP server entry, and it explicitly documents today's real limitation: "Scout invokes the hook and the hook emits recall context, but this desktop chat surface does not inject that context into the model." So the MCP server is the **currently load-bearing** path, not the hook.
 
