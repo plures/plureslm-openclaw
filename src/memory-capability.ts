@@ -26,11 +26,11 @@
  * written session chunks (same-category + same-temporal-window), and `search()`
  * expands the direct vector/text hit set by pulling each top seed's graph
  * neighbors in as additional `via:"graph"` hits (appended after the direct
- * hits, de-duped, never reordered ahead of them — top-k precision preserved).
+ * hits, de-duped, never reordered ahead of them - top-k precision preserved).
  * This gives the store associativity a flat memory backend structurally lacks:
  * "the other memories written alongside this one". Edge creation/traversal is
  * caller-triggered from `sync()`/`search()` (a DB-reactive on-write trigger is
- * a later phase), and v1 links on `category`+`temporal` only — embedding-cosine
+ * a later phase), and v1 links on `category`+`temporal` only - embedding-cosine
  * "semantic" edges are honestly deferred, not stubbed.
  *
  * Honestly ABSENT this pass (per the Path B scope decision, not a stub): a
@@ -208,7 +208,7 @@ export type PluresLmCapabilityConfig = {
   /**
    * Optional absolute path to a directory of memory-doc source files
    * (markdown/text) to ingest on a `force:true` sync. When unset, the forced
-   * full-rescan branch is a no-op — that is honest (nothing to scan), not a
+   * full-rescan branch is a no-op - that is honest (nothing to scan), not a
    * stub. Session transcripts passed via `sessionFiles` are ingested
    * regardless of this setting.
    */
@@ -286,7 +286,7 @@ function deriveSnippetFromData(data: Record<string, unknown>): string {
  * Split markdown/text into reasonably-sized chunks, tracking 1-based start/end
  * line numbers per chunk. Splits on blank-line paragraph boundaries and packs
  * paragraphs up to {@link CHUNK_MAX_CHARS}; a single oversized paragraph is
- * emitted on its own (we do not mid-word slice — line fidelity matters more
+ * emitted on its own (we do not mid-word slice - line fidelity matters more
  * than a hard cap here). Empty/whitespace-only input yields no chunks.
  */
 function chunkText(raw: string): Chunk[] {
@@ -372,7 +372,7 @@ function listTextFiles(dir: string): string[] {
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch {
-    return out; // unreadable dir — honest no-op
+    return out; // unreadable dir - honest no-op
   }
   for (const entry of entries) {
     const full = join(dir, entry.name);
@@ -425,7 +425,7 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
         typeof payload?.endLine === "number" && payload.endLine >= startLine
           ? payload.endLine
           : Math.max(startLine, lineCount);
-      // Graph hits have no cosine/text score of their own — they are surfaced by
+      // Graph hits have no cosine/text score of their own - they are surfaced by
       // association, so we set neither vectorScore nor textScore and carry an
       // honest provenance citation noting the seed they were reached from.
       const citation =
@@ -490,11 +490,23 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
     from?: number;
     lines?: number;
   }): Promise<ReadResult> {
-    // `relPath` is a PluresDB node id. We resolve it via recall on the id so
-    // the read path stays read-only and uses the same store handle.
-    const hits = store.recall(params.relPath, 1);
-    const match = hits.find((h) => h.id === params.relPath) ?? hits[0];
-    const text = match ? match.snippet : "";
+    // `relPath` is a PluresDB node id. We MUST resolve it via an EXACT id
+    // lookup (`store.get(id)`), never a semantic `recall()`. `recall()` is a
+    // similarity search: passing the id AS the query text and taking
+    // `hits[0]` when no exact-id hit exists silently returns an UNRELATED
+    // memory whose content happens to be nearest-neighbor to the id string.
+    // Confirmed empirically 2026-07-24 against the real migrated live store
+    // (C:\Users\kbristol\.pluresLM\migrated-store, 3,309 chunks): this path
+    // returned wrong content for ids surfaced by `search()` itself. An id
+    // read must be an exact match or an honest error - never a fallback to
+    // "nearest" content.
+    const payload = store.get(params.relPath);
+    if (!payload) {
+      throw new Error(
+        `[plureslm] readFile: no node found for id "${params.relPath}" (exact lookup, not a similarity fallback)`,
+      );
+    }
+    const text = deriveSnippetFromData(payload);
     return {
       text,
       path: params.relPath,
@@ -589,7 +601,7 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
       }
     }
     // NOTE: when `sessionFiles` is empty and `force` is false (e.g. the lazy
-    // `reason:"search"` sync), there is intentionally nothing to do here — a
+    // `reason:"search"` sync), there is intentionally nothing to do here - a
     // standing memory-doc watcher is ABSENT this pass by design (see header).
 
     const total = work.length;
@@ -604,7 +616,7 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
     // written this sync is stamped with `data.syncEpoch === syncStartEpoch`, so
     // a NUMERIC `syncEpoch >= syncStartEpoch` filter scopes link-on-write to
     // exactly this sync's fresh set. We use a numeric epoch (not the ISO
-    // `timestamp` string) because the engine's `>=` only compares numbers — an
+    // `timestamp` string) because the engine's `>=` only compares numbers - an
     // ISO-string `>=` filter is always empty (see PluresLmStore.linkRecent).
     const syncStartEpoch = Date.now();
     let wroteAny = false;
@@ -617,7 +629,7 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
         const st = statSync(item.path);
         stat = { mtimeMs: st.mtimeMs, size: st.size };
       } catch {
-        // Unreadable/disappeared file — skip it honestly; report progress.
+        // Unreadable/disappeared file - skip it honestly; report progress.
         completed += 1;
         params?.progress?.({ completed, total, label: item.path });
         continue;
@@ -663,9 +675,9 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
     }
 
     // Link-on-write (associative recall, P1): run ONCE after the whole per-file
-    // loop closes — not per file — so `auto_link` sees ALL chunks written this
+    // loop closes - not per file - so `auto_link` sees ALL chunks written this
     // sync at once (including cross-file same-category/same-window pairs) and is
-    // invoked a single time rather than O(n²) per file. Skip entirely when
+    // invoked a single time rather than O(n2) per file. Skip entirely when
     // nothing was actually written (a clean/idempotent re-sync stays cheap: no
     // dirty nodes => no new edges to form). `linkRecent` is best-effort and
     // never throws out of `sync()`, preserving the write contract.
@@ -673,7 +685,7 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
       store.linkRecent(syncStartEpoch);
     }
 
-    // Reactive consolidation sweep (P3, PULL/TICK — not push). The native has no
+    // Reactive consolidation sweep (P3, PULL/TICK - not push). The native has no
     // on-write trigger, so we run the idempotent in-DB consolidation sweep
     // opportunistically here on the SAME handle: forced when the caller forces a
     // sync, otherwise interval-guarded by a DURABLE checkpoint so the lazy
