@@ -1,6 +1,6 @@
 {
   "name": "@plures/plureslm-openclaw",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "PluresLM memory capability for OpenClaw — read-path recall backed by @plures/pluresdb-native (Stage A skeleton).",
   "license": "AGPL-3.0-or-later",
   "type": "module",
@@ -51,8 +51,8 @@
     "test:vitest": "vitest run",
     "gate": "tsc -p tsconfig.json && tsx test/recall.gate.mts && tsx test/p3p4.gate.mts",
     "test:service": "tsx test/service-api.gate.mts",
-  "test:source-dir-recall": "tsx test/source-dir-recall.gate.mts",
-  "test:exact-id-lookup": "tsx test/exact-id-lookup.gate.mts"
+    "test:source-dir-recall": "tsx test/source-dir-recall.gate.mts",
+    "test:exact-id-lookup": "tsx test/exact-id-lookup.gate.mts"
   },
   "dependencies": {
     "@plures/pluresdb-native": "file:../pluresdb/crates/pluresdb-node"
