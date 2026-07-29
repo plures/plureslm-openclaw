@@ -16,4 +16,3 @@ permissions:
 jobs:
   auto-merge:
     uses: plures/.github/.github/workflows/dependabot-auto-merge.yml@main
-    secrets: inherit
