@@ -14,6 +14,8 @@ export type {
   RefusedWrite,
   StoreWriteResult,
   ConsolidateResult,
+  PxActionContext,
+  PxActionDecision,
 } from "./pluresdb.js";
 
 // Real secret detector backing the P4 governed-write gate (C-MEM-REDACT).
@@ -33,3 +35,20 @@ export type { PluresLmCapabilityConfig } from "./memory-capability.js";
 
 export { createPluresLmServiceSearchManager } from "./service-client.js";
 export type { PluresLmServiceClientConfig } from "./service-client.js";
+
+export {
+  dreamIngest,
+  dreamScore,
+  dreamTick,
+  dreamScheduleTimers,
+  dreamRecordRecall,
+  dreamExplain,
+  dreamStatus,
+  isStagedCandidateId,
+  DEFAULT_DREAMING_CONFIG,
+} from "./dreaming.js";
+export type {
+  DreamingConfig,
+  LearningCandidate,
+  ThresholdGap,
+} from "./dreaming.js";

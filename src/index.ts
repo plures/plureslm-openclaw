@@ -30,6 +30,16 @@ import {
   type PluresLmCapabilityConfig,
 } from "./memory-capability.js";
 import { createPluresLmServiceSearchManager } from "./service-client.js";
+import { PluresLmStore } from "./pluresdb.js";
+import {
+  DEFAULT_DREAMING_CONFIG,
+  dreamExplain,
+  dreamScheduleTimers,
+  dreamStatus,
+  dreamTick,
+  isStagedCandidateId,
+  type DreamingConfig,
+} from "./dreaming.js";
 
 type PluresLmPluginConfig = {
   dbPath?: string;
@@ -41,6 +51,9 @@ type PluresLmPluginConfig = {
   compressAboveTokens?: number;
   reactivePx?: boolean;
   reactivePxPolicy?: string;
+  dreaming?: boolean;
+  dreamingIngestIntervalSecs?: number;
+  dreamingScoreIntervalSecs?: number;
 };
 
 function readConfig(raw: Record<string, unknown> | undefined): PluresLmPluginConfig {
@@ -59,7 +72,12 @@ function readConfig(raw: Record<string, unknown> | undefined): PluresLmPluginCon
   const reactivePx = typeof cfg.reactivePx === "boolean" ? cfg.reactivePx : undefined;
   const reactivePxPolicy =
     typeof cfg.reactivePxPolicy === "string" ? cfg.reactivePxPolicy : undefined;
-  return { dbPath, serviceUrl, embeddingModel, vectorThreshold, maxResults, sourceDir, compressAboveTokens, reactivePx, reactivePxPolicy };
+  const dreaming = typeof cfg.dreaming === "boolean" ? cfg.dreaming : undefined;
+  const dreamingIngestIntervalSecs =
+    typeof cfg.dreamingIngestIntervalSecs === "number" ? cfg.dreamingIngestIntervalSecs : undefined;
+  const dreamingScoreIntervalSecs =
+    typeof cfg.dreamingScoreIntervalSecs === "number" ? cfg.dreamingScoreIntervalSecs : undefined;
+  return { dbPath, serviceUrl, embeddingModel, vectorThreshold, maxResults, sourceDir, compressAboveTokens, reactivePx, reactivePxPolicy, dreaming, dreamingIngestIntervalSecs, dreamingScoreIntervalSecs };
 }
 
 const MemorySearchSchema = {
@@ -86,6 +104,19 @@ const MemoryGetSchema = {
   additionalProperties: false,
 } as const;
 
+const DreamExplainSchema = {
+  type: "object",
+  properties: { candidateId: { type: "string", minLength: 1 } },
+  required: ["candidateId"],
+  additionalProperties: false,
+} as const;
+
+const DreamStatusSchema = {
+  type: "object",
+  properties: {},
+  additionalProperties: false,
+} as const;
+
 function toolJson(value: unknown) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -104,6 +135,26 @@ function resolveCapabilityConfig(cfg: PluresLmPluginConfig): PluresLmCapabilityC
     compressAboveTokens: cfg.compressAboveTokens,
     reactivePx: cfg.reactivePx,
     reactivePxPolicy: cfg.reactivePxPolicy,
+  };
+}
+
+function resolveDreamingConfig(cfg: PluresLmPluginConfig): DreamingConfig {
+  return {
+    ...DEFAULT_DREAMING_CONFIG,
+    enabled: cfg.dreaming ?? DEFAULT_DREAMING_CONFIG.enabled,
+    ingest: {
+      intervalSecs:
+        typeof cfg.dreamingIngestIntervalSecs === "number" && cfg.dreamingIngestIntervalSecs > 0
+          ? Math.floor(cfg.dreamingIngestIntervalSecs)
+          : DEFAULT_DREAMING_CONFIG.ingest.intervalSecs,
+    },
+    score: {
+      ...DEFAULT_DREAMING_CONFIG.score,
+      intervalSecs:
+        typeof cfg.dreamingScoreIntervalSecs === "number" && cfg.dreamingScoreIntervalSecs > 0
+          ? Math.floor(cfg.dreamingScoreIntervalSecs)
+          : DEFAULT_DREAMING_CONFIG.score.intervalSecs,
+    },
   };
 }
 
@@ -150,6 +201,9 @@ function createPluresLmSearchTool(cfg: PluresLmPluginConfig) {
         : createPluresLmSearchManager(directConfig!);
       const rawResults = await manager.search(query, { maxResults });
       const results = rawResults
+        // Staged Dreaming material is private until Score promotes it. Filter
+        // before corpus/min-score checks so graph-expanded candidates cannot leak.
+        .filter((result) => !isStagedCandidateId(result.path))
         .filter((result) => minScore === undefined || result.score >= minScore)
         .filter((result) => sourceMatchesCorpus(result.source, toolParams.corpus))
         .map((result) => ({
@@ -164,6 +218,43 @@ function createPluresLmSearchTool(cfg: PluresLmPluginConfig) {
           snippet: result.snippet,
         }));
       return toolJson({ provider: "plureslm", query, count: results.length, results });
+    },
+  };
+}
+
+function createDreamStatusTool(cfg: PluresLmPluginConfig) {
+  if (!cfg.dbPath) return null;
+  return {
+    label: "PluresLM Dreaming Status",
+    name: "plureslm_dream_status",
+    description:
+      "Show real Dreaming checkpoints, scheduled timer eligibility, candidate counts, and the deferred Reflect phase.",
+    parameters: DreamStatusSchema,
+    execute: async () => {
+      const directConfig = resolveCapabilityConfig(cfg)!;
+      const store = PluresLmStore.open(directConfig);
+      const dreaming = resolveDreamingConfig(cfg);
+      if (dreaming.enabled) {
+        dreamScheduleTimers(store, dreaming);
+        dreamTick(store, dreaming);
+      }
+      return toolJson(dreamStatus(store, dreaming));
+    },
+  };
+}
+
+function createDreamExplainTool(cfg: PluresLmPluginConfig) {
+  if (!cfg.dbPath) return null;
+  return {
+    label: "PluresLM Dreaming Explain",
+    name: "plureslm_dream_explain",
+    description: "Explain a Dreaming candidate from its persisted computed signals and promotion thresholds.",
+    parameters: DreamExplainSchema,
+    execute: async (_toolCallId: string, toolParams: Record<string, unknown>) => {
+      const candidateId = typeof toolParams.candidateId === "string" ? toolParams.candidateId.trim() : "";
+      if (!candidateId) return toolJson({ unavailable: true, error: "candidateId required" });
+      const store = PluresLmStore.open(resolveCapabilityConfig(cfg)!);
+      return toolJson(dreamExplain(store, candidateId, resolveDreamingConfig(cfg)));
     },
   };
 }
@@ -231,6 +322,8 @@ const plugin: ReturnType<typeof definePluginEntry> = definePluginEntry({
     api.registerMemoryCapability(buildMemoryCapability(cfg));
     api.registerTool(() => createPluresLmSearchTool(cfg), { names: ["memory_search"] });
     api.registerTool(() => createPluresLmGetTool(cfg), { names: ["memory_get"] });
+    api.registerTool(() => createDreamStatusTool(cfg), { names: ["plureslm_dream_status"] });
+    api.registerTool(() => createDreamExplainTool(cfg), { names: ["plureslm_dream_explain"] });
   },
 });
 

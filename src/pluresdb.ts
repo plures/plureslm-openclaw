@@ -489,6 +489,18 @@ export type PluresLmStoreOptions = {
   reactivePxPolicy?: string;
 };
 
+export type PxActionContext = {
+  action_type: string;
+  target?: string;
+  session_type?: string;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type PxActionDecision =
+  | { allowed: true; result: unknown }
+  | { allowed: false; error: string; result?: unknown };
+
 type RawNode = {
   id?: unknown;
   data?: unknown;
@@ -1340,6 +1352,91 @@ export class PluresLmStore {
    */
   execIr(steps: unknown[]): unknown {
     return this.#ensureDb().execIr(steps);
+  }
+
+  /**
+   * Load a Praxis .px policy source into the native policy engine. This is a
+   * direct capability probe: if the linked native build lacks pxLoadPxSource(),
+   * throw a clear error instead of pretending Scout has a policy engine.
+   */
+  pxLoadPolicy(source: string): unknown {
+    const db = this.#ensureDb() as unknown as {
+      pxLoadPxSource?: (text: string) => unknown;
+    };
+    if (typeof db.pxLoadPxSource !== "function") {
+      throw new Error(
+        "[plureslm] native pxLoadPxSource() is unavailable; rebuild/relink @plures/pluresdb-native with the Praxis .px surface.",
+      );
+    }
+    return db.pxLoadPxSource(source);
+  }
+
+  /**
+   * Insert/upsert one structured Praxis constraint into PluresDB and compile it
+   * into the native action engine.
+   */
+  pxInsertConstraint(constraint: Record<string, unknown>): unknown {
+    const db = this.#ensureDb() as unknown as {
+      pxInsertConstraint?: (constraint: unknown) => unknown;
+    };
+    if (typeof db.pxInsertConstraint !== "function") {
+      throw new Error(
+        "[plureslm] native pxInsertConstraint() is unavailable; rebuild/relink @plures/pluresdb-native with the Praxis constraint surface.",
+      );
+    }
+    return db.pxInsertConstraint(constraint);
+  }
+
+  /**
+   * List persisted Praxis constraints through the same procedure IR surface used
+   * for graph operations. These are real CRDT nodes with data.type ==
+   * "praxis_constraint"; no local registry is fabricated.
+   */
+  pxListConstraints(): Array<{ id: string; data: Record<string, unknown>; timestamp?: string }> {
+    const result = this.#ensureDb().execIr([
+      {
+        op: "filter",
+        predicate: { field: "type", cmp: "==", value: "praxis_constraint" },
+      },
+    ]) as { nodes?: unknown[] };
+    const nodes = Array.isArray(result.nodes) ? result.nodes : [];
+    const out: Array<{ id: string; data: Record<string, unknown>; timestamp?: string }> = [];
+    for (const raw of nodes) {
+      if (!raw || typeof raw !== "object") continue;
+      const node = raw as RawNode;
+      const id = asString(node.id);
+      if (!id) continue;
+      const data =
+        node.data && typeof node.data === "object"
+          ? (node.data as Record<string, unknown>)
+          : {};
+      out.push({ id, data, timestamp: asString(node.timestamp) });
+    }
+    return out;
+  }
+
+  /**
+   * Evaluate one proposed action through the native Praxis action engine. Throws
+   * are converted into an explicit denied decision so MCP callers get a useful
+   * policy-engine result instead of a transport failure.
+   */
+  pxCheckAction(context: PxActionContext): PxActionDecision {
+    const db = this.#ensureDb() as unknown as {
+      pxOnAction?: (context: unknown) => unknown;
+    };
+    if (typeof db.pxOnAction !== "function") {
+      throw new Error(
+        "[plureslm] native pxOnAction() is unavailable; rebuild/relink @plures/pluresdb-native with the Praxis action engine surface.",
+      );
+    }
+    try {
+      return { allowed: true, result: db.pxOnAction(context) };
+    } catch (err) {
+      return {
+        allowed: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   /**
