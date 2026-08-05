@@ -1448,6 +1448,74 @@ export class PluresLmStore {
     return out;
   }
 
+  /**
+   * Get one value from the native Agens reactive-state table
+   * (`agensStateGet`). Returns `null` when the key is unset or the state table
+   * is unavailable - never throws, never fabricates a value.
+   */
+  agensStateGet(key: string): unknown {
+    try {
+      return (this.#ensureDb() as unknown as { agensStateGet: (k: string) => unknown }).agensStateGet(key);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Set one value in the native Agens reactive-state table
+   * (`agensStateSet`). Best-effort: a failure here is swallowed (matching the
+   * existing `#writeCheckpoint` posture) rather than throwing on a caller
+   * that only wants a durable hint, not a guaranteed write.
+   */
+  agensStateSet(key: string, value: unknown): void {
+    try {
+      (this.#ensureDb() as unknown as { agensStateSet: (k: string, v: unknown) => void }).agensStateSet(key, value);
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /**
+   * Schedule a recurring native Agens timer row (`agensTimerSchedule`).
+   * Returns the timer node id, or `null` when the native timer surface is
+   * unavailable (honest absence, never a fake id).
+   */
+  agensTimerSchedule(name: string, intervalSecs: number, payload: unknown): string | null {
+    try {
+      return (
+        this.#ensureDb() as unknown as {
+          agensTimerSchedule: (n: string, i: number, p: unknown) => string;
+        }
+      ).agensTimerSchedule(name, intervalSecs, payload);
+    } catch {
+      return null;
+    }
+  }
+
+  /** List all scheduled native Agens timer rows (`agensTimerList`). Empty array on any failure. */
+  agensTimerList(): Array<{ id: string; name: string; intervalSecs: number; nextFireAt?: string; payload?: unknown }> {
+    try {
+      const rows = (
+        this.#ensureDb() as unknown as {
+          agensTimerList: () => unknown;
+        }
+      ).agensTimerList();
+      return Array.isArray(rows) ? (rows as Array<{ id: string; name: string; intervalSecs: number; nextFireAt?: string; payload?: unknown }>) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Timers whose `next_fire_at` has passed (`agensTimerDue`). Empty array on any failure. */
+  agensTimerDue(): Array<{ id: string; name: string }> {
+    try {
+      const rows = (this.#ensureDb() as unknown as { agensTimerDue: () => unknown }).agensTimerDue();
+      return Array.isArray(rows) ? (rows as Array<{ id: string; name: string }>) : [];
+    } catch {
+      return [];
+    }
+  }
+
   // --- P3 reactive consolidation sweep (pull/tick) -------------------------
 
   /**
