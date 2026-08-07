@@ -1,0 +1,32 @@
+ M scout-mcp/plureslm-mcp.mjs
+ M src/api.ts
+M  src/index.ts
+M  src/memory-capability.ts
+ M src/pluresdb.ts
+?? .github/workflows/release-scout-windows.yml
+?? .migration-milestones.md
+?? artifacts/
+?? docs/adr-0002-openclaw-service-boundary.md
+?? docs/adr-0005-dreaming-design.md
+?? find-missing-md.mjs
+?? ingest-missing-md.mjs
+?? migrate-memory.mjs
+?? preflight-swap.mjs
+?? probe-getone.mjs
+?? probe-migrated.mjs
+?? probe-recall.mjs
+?? probe-search.mjs
+?? probe-swapgap.mjs
+?? reconcile-ids.mjs
+?? reconcile-source.mjs
+?? scout-hooks/hooks/plureslm-autorecall-core.mjs
+?? scripts/
+?? srclist.tmp.txt
+?? state.txt
+?? test/mcp-px-policy.gate.mjs
+?? test/scout-autorecall-hook.test.mjs
+?? test/scout-memory-comparison.gate.mts
+?? test/source-dir-recall.gate.mts
+?? testlist.tmp.txt
+?? verify-fresh.mjs
+?? verify-migration.mjs

@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "plureslm": {
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "C:\\Projects\\plureslm-openclaw\\scout-mcp\\plureslm-mcp.ps1",
+        "-RepoRoot",
+        "C:\\Projects\\plureslm-openclaw",
+        "-DbPath",
+        "C:\\Users\\kbristol\\.copilot\\plugin-data\\plureslm\\scout-db"
+      ]
+    }
+  }
+}
