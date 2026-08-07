@@ -357,22 +357,17 @@ workspace's own `AGENTS.md` "Write It Down" convention, but they are efficiency 
 daily-note tooling generally, not a Dreaming-specific design decision, and are called out here only
 so they aren't lost — no further scope is implied.
 
-## 7. Open questions requiring kbristol's decision
+## 7. Design decisions (resolved 2026-08-07 by kbristol)
 
-1. **Reflect-phase LLM model default.** Should `reflect.diaryModel` default to `null` (inherit the
+All 3 questions below are now RESOLVED - decisions match the recommended defaults, which were already implemented in code prior to this decision being formally recorded. No code changes required as a result of this resolution; this section is updated for the record only.
+
+1. **Reflect-phase LLM model default: `null` (inherit host default model).** DECIDED. Should `reflect.diaryModel` default to `null` (inherit the
    host's default model, per memory-core's own pattern) or should it default to a specific cheap
    model to bound cost more predictably from day one? No strong signal either way from the source
    material; recommend defaulting to `null` (inherit) unless kbristol has a standing cost policy
    for background/subagent turns this should follow.
-2. **Should `staged`-tier candidates ever be default-visible to `memory_search`,** or should the
-   `corpus: "staged"` opt-in filter (§3.4) be the permanent policy? This ADR recommends opt-in-only
-   by default (staged material is explicitly provisional), but if kbristol wants staged material
-   surfaced automatically with a visible provisional marker instead of hidden by default, that
-   changes the tool contract and should be decided before implementation, not discovered during it.
-3. **Shadow-trial cost policy.** `reflect.shadowTrial` (§3.1, §4) runs an extra baseline-vs-
-   candidate model comparison per reflect cycle — a real, if bounded, per-cycle cost. Recommend
-   `false` by default (as configured above); confirm that default is acceptable before
-   implementation turns it into a live cost center.
+2. **Staged-tier candidates: opt-in only via `corpus: "staged"` (§3.4), never default-visible to `memory_search`.** DECIDED - matches kbristol's standing "don't surface unverified data by default" posture. Contingent on promotion actually running on a real automated cadence (dreaming-tick cron/heartbeat), not manual-only, so staged items don't silently rot.
+3. **Shadow-trial cost policy: `false` by default** (as already configured), with a daily token/run budget cap (not a per-trial cap) once `reflect.shadowTrial` is actually implemented - avoids an open tap while still giving headroom. DECIDED. Note: shadow-trial itself remains genuinely unimplemented in v1 (no LLM chat/completion bridge exists in this codebase yet, only `embeddingModel` - honestly deferred, not stubbed); this cost policy applies once that bridge exists and reflect is built for real.
 
 ## PR summary (for when implementation begins — not part of this ADR's change)
 
