@@ -1,0 +1,9 @@
+﻿pluresLM Scout Windows installer
+Version: 0.1.0
+
+Install from an extracted zip:
+
+  powershell -ExecutionPolicy Bypass -File .\Install-PluresLMScout.ps1 -RepoRoot C:\path\to\built\plureslm-openclaw
+
+If this package includes dist\pluresdb.js, -RepoRoot can be omitted and defaults to this extracted directory.
+Restart Microsoft Scout after installation.

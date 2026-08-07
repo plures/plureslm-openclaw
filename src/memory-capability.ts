@@ -59,6 +59,7 @@ import {
 } from "openclaw/plugin-sdk/memory-core";
 
 import { PluresLmStore, type PluresLmStoreOptions } from "./pluresdb.js";
+import { isStagedCandidateId } from "./dreaming.js";
 import { createPluresLmServiceSearchManager } from "./service-client.js";
 
 // NOTE: `MemorySearchResult`, `MemoryReadResult`, and `MemoryProviderStatus`
@@ -447,7 +448,13 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
       };
     };
 
-    const results: SearchResult[] = hits.map((hit) =>
+    // Candidate nodes are a private staging tier. Never return them through
+    // the normal memory capability (including graph expansion) until Score has
+    // promoted their origin into durable memory.
+    const visibleHits = hits.filter(
+      (hit) => hit.category !== "learning_candidates" && !isStagedCandidateId(hit.id),
+    );
+    const results: SearchResult[] = visibleHits.map((hit) =>
       toResult(hit.id, hit.score, hit.snippet, hit.category, asPayload(hit.data), hit.via),
     );
 
@@ -462,7 +469,7 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
     const SEED_N = 3;
     const EXPAND_DEPTH = 1;
     const seen = new Set(results.map((r) => r.path));
-    const seeds = hits.slice(0, SEED_N);
+    const seeds = visibleHits.slice(0, SEED_N);
     for (const seed of seeds) {
       let neighbors: Array<{ id: string; data: Record<string, unknown> }>;
       try {

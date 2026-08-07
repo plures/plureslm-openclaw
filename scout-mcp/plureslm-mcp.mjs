@@ -73,6 +73,8 @@ function readConfig() {
 
 const config = readConfig();
 let storePromise = null;
+let nativeStatusPromise = null;
+let prewarmStarted = false;
 
 async function getStore() {
   if (storePromise) return storePromise;
@@ -96,6 +98,51 @@ async function getStore() {
     });
   })();
   return storePromise;
+}
+
+async function getNativeStatus() {
+  if (nativeStatusPromise) return nativeStatusPromise;
+  nativeStatusPromise = (async () => {
+    const store = await getStore();
+    const status = store.status();
+    return {
+      provider: "plureslm",
+      dbPath: status.dbPath,
+      embeddingModel: status.embeddingModel,
+      embeddingDimension: status.embeddingDimension,
+      totalNodes: status.totalNodes,
+      typeCounts: status.typeCounts,
+      vectorAvailable: store.probeVector(),
+      embeddingAvailable: store.hasEmbedder(),
+    };
+  })();
+  return nativeStatusPromise;
+}
+
+function quickStatus() {
+  const modulePath = resolve(config.repoRoot, "dist", "pluresdb.js");
+  const runtimeAvailable = existsSync(modulePath);
+  return {
+    provider: "plureslm",
+    dbPath: config.dbPath,
+    embeddingModel: config.embeddingModel,
+    runtimeAvailable,
+    runtimePath: modulePath,
+    status: runtimeAvailable && !!config.dbPath ? "ready" : "configuration-error",
+    detail:
+      "MCP server is reachable. Native PluresDB status is available via plures_native_status.",
+  };
+}
+
+function prewarmStore() {
+  if (prewarmStarted) return;
+  prewarmStarted = true;
+  const timer = setTimeout(() => {
+    void getStore().catch(() => {
+      // Explicit tool calls surface load/configuration errors.
+    });
+  }, 5000);
+  timer.unref?.();
 }
 
 function textResult(value, isError = false) {
@@ -241,6 +288,58 @@ function contentFromData(data) {
   return JSON.stringify(data, null, 2);
 }
 
+function objectValue(value, name) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${name} must be an object.`);
+  }
+  return value;
+}
+
+function stringField(value, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function normalizePxAction(args = {}) {
+  const explicit = args.context;
+  if (explicit && typeof explicit === "object" && !Array.isArray(explicit)) {
+    return explicit;
+  }
+  const actionType = stringField(args.actionType ?? args.action_type);
+  if (!actionType.trim()) {
+    throw new Error("actionType is required.");
+  }
+  return {
+    action_type: actionType,
+    target: stringField(args.target, undefined),
+    session_type: stringField(args.sessionType ?? args.session_type, "main"),
+    metadata:
+      args.metadata && typeof args.metadata === "object" && !Array.isArray(args.metadata)
+        ? args.metadata
+        : {},
+  };
+}
+
+function summarizeConstraints(constraints) {
+  return constraints.map((node) => {
+    const constraint =
+      node.data && typeof node.data.constraint === "object" ? node.data.constraint : node.data;
+    return {
+      id:
+        typeof constraint.id === "string"
+          ? constraint.id
+          : typeof node.id === "string"
+            ? node.id
+            : undefined,
+      description:
+        typeof constraint.description === "string" ? constraint.description : undefined,
+      severity: typeof constraint.severity === "string" ? constraint.severity : undefined,
+      fix: typeof constraint.fix === "string" ? constraint.fix : undefined,
+      timestamp: node.timestamp,
+      constraint,
+    };
+  });
+}
+
 async function loadPxNapi() {
   if (!config.pxNapiModule) {
     throw new Error(
@@ -253,7 +352,12 @@ async function loadPxNapi() {
 const tools = [
   {
     name: "plures_status",
-    description: "Report PluresLM memory backend status.",
+    description: "Report fast PluresLM MCP server status without loading the embedding model.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+  },
+  {
+    name: "plures_native_status",
+    description: "Report full PluresLM native backend status, including vector and embedding availability.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
   },
   {
@@ -313,22 +417,77 @@ const tools = [
       properties: { source: { type: "string" } },
     },
   },
+  {
+    name: "px_load_policy",
+    description: "Load Praxis .px policy source into the native PluresDB policy engine.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["source"],
+      properties: { source: { type: "string" } },
+    },
+  },
+  {
+    name: "px_insert_constraint",
+    description: "Insert or update one structured Praxis constraint in PluresDB.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["constraint"],
+      properties: { constraint: { type: "object" } },
+    },
+  },
+  {
+    name: "px_list_constraints",
+    description: "List persisted Praxis constraints available to the native policy engine.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        severity: { type: "string" },
+        includeRaw: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
+    name: "px_check_action",
+    description: "Evaluate a proposed memory, plan, or agent action through the native Praxis policy engine.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        actionType: { type: "string" },
+        target: { type: "string" },
+        sessionType: { type: "string" },
+        metadata: { type: "object" },
+        context: { type: "object" },
+      },
+    },
+  },
+  {
+    name: "px_explain_violation",
+    description: "Evaluate a proposed action and return matching policy context and remediation hints.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        actionType: { type: "string" },
+        target: { type: "string" },
+        sessionType: { type: "string" },
+        metadata: { type: "object" },
+        context: { type: "object" },
+      },
+    },
+  },
 ];
 
 async function callTool(name, args = {}) {
   if (name === "plures_status") {
-    const store = await getStore();
-    const status = store.status();
-    return textResult({
-      provider: "plureslm",
-      dbPath: status.dbPath,
-      embeddingModel: status.embeddingModel,
-      embeddingDimension: status.embeddingDimension,
-      totalNodes: status.totalNodes,
-      typeCounts: status.typeCounts,
-      vectorAvailable: store.probeVector(),
-      embeddingAvailable: store.hasEmbedder(),
-    });
+    return textResult(quickStatus());
+  }
+
+  if (name === "plures_native_status") {
+    return textResult(await getNativeStatus());
   }
 
   if (name === "plures_recall") {
@@ -452,6 +611,7 @@ async function callTool(name, args = {}) {
           true,
         );
       }
+
       const result = await fn(source);
       return textResult({ ok: true, result });
     } catch (error) {
@@ -460,6 +620,65 @@ async function callTool(name, args = {}) {
         true,
       );
     }
+  }
+
+  if (name === "px_load_policy") {
+    const store = await getStore();
+    const source = String(args.source ?? "");
+    if (!source.trim()) return textResult({ ok: false, error: "source is required" }, true);
+    const result = store.pxLoadPolicy(source);
+    return textResult({ ok: true, result });
+  }
+
+  if (name === "px_insert_constraint") {
+    const store = await getStore();
+    const constraint = objectValue(args.constraint, "constraint");
+    const result = store.pxInsertConstraint(constraint);
+    return textResult({ ok: true, result });
+  }
+
+  if (name === "px_list_constraints") {
+    const store = await getStore();
+    const severity = typeof args.severity === "string" ? args.severity : undefined;
+    let constraints = summarizeConstraints(store.pxListConstraints());
+    if (severity) constraints = constraints.filter((c) => c.severity === severity);
+    if (args.includeRaw !== true) {
+      constraints = constraints.map(({ constraint, ...rest }) => rest);
+    }
+    return textResult({ ok: true, count: constraints.length, constraints });
+  }
+
+  if (name === "px_check_action") {
+    const store = await getStore();
+    const context = normalizePxAction(args);
+    const decision = store.pxCheckAction(context);
+    return textResult({ ok: true, context, decision });
+  }
+
+  if (name === "px_explain_violation") {
+    const store = await getStore();
+    const context = normalizePxAction(args);
+    const decision = store.pxCheckAction(context);
+    const constraints = summarizeConstraints(store.pxListConstraints());
+    const message = decision.allowed
+      ? "Action is allowed by the current Praxis policy set."
+      : decision.error;
+    const matchingHints = decision.allowed
+      ? []
+      : constraints.filter((c) => {
+          const haystack = JSON.stringify(c).toLowerCase();
+          const needle = String(decision.error).toLowerCase();
+          const id = String(c.id ?? "").toLowerCase();
+          return (id.length > 0 && needle.includes(id)) || haystack.includes(String(context.action_type).toLowerCase());
+        });
+    return textResult({
+      ok: true,
+      context,
+      allowed: decision.allowed,
+      message,
+      decision,
+      relevantConstraints: matchingHints.length > 0 ? matchingHints : constraints.slice(0, 8),
+    });
   }
 
   return textResult({ error: `Unknown tool: ${name}` }, true);
@@ -494,7 +713,10 @@ async function handle(message) {
       });
       return;
     }
-    if (method === "notifications/initialized") return;
+    if (method === "notifications/initialized") {
+      prewarmStore();
+      return;
+    }
     if (method === "ping") {
       respond(id, {});
       return;

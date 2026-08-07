@@ -1,0 +1,91 @@
+name: Release Scout Windows Installer
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Installer version, for example 0.1.0 or v0.1.0"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package Windows installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          if (-not $version) {
+            if ("${{ github.ref_type }}" -eq "tag") {
+              $version = "${{ github.ref_name }}"
+            } else {
+              $pkg = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
+              $version = $pkg.version
+            }
+          }
+          $version = $version.Trim()
+          if (-not $version) { throw "Version could not be resolved." }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "safe_version=$($version.TrimStart('v'))" >> $env:GITHUB_OUTPUT
+
+      - name: Validate PowerShell scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -Recurse -File -Include *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Error "$($_.FullName): $($errors | ForEach-Object Message | Out-String)"
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Validate hook JavaScript syntax
+        shell: pwsh
+        run: |
+          node --check .\scout-hooks\hooks\plureslm-autorecall-core.mjs
+          node --check .\scout-hooks\hooks\plureslm-autorecall.mjs
+          node --check .\scout-mcp\plureslm-mcp.mjs
+
+      - name: Build installer zip
+        shell: pwsh
+        run: |
+          .\scripts\package-scout-windows.ps1 -Version "${{ steps.version.outputs.version }}" -OutputDir .\artifacts
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plureslm-scout-windows-${{ steps.version.outputs.safe_version }}
+          path: |
+            artifacts/plureslm-scout-windows-${{ steps.version.outputs.safe_version }}.zip
+            artifacts/plureslm-scout-windows-${{ steps.version.outputs.safe_version }}.zip.sha256
+
+      - name: Attach installer to GitHub Release
+        if: ${{ github.ref_type == 'tag' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/plureslm-scout-windows-${{ steps.version.outputs.safe_version }}.zip
+            artifacts/plureslm-scout-windows-${{ steps.version.outputs.safe_version }}.zip.sha256
+          generate_release_notes: true
