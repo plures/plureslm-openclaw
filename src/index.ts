@@ -44,6 +44,7 @@ import {
 type PluresLmPluginConfig = {
   dbPath?: string;
   serviceUrl?: string;
+  serviceToken?: string;
   embeddingModel?: string;
   vectorThreshold?: number;
   maxResults?: number;
@@ -60,6 +61,7 @@ function readConfig(raw: Record<string, unknown> | undefined): PluresLmPluginCon
   const cfg = raw ?? {};
   const dbPath = typeof cfg.dbPath === "string" ? cfg.dbPath : undefined;
   const serviceUrl = typeof cfg.serviceUrl === "string" ? cfg.serviceUrl : undefined;
+  const serviceToken = typeof cfg.serviceToken === "string" ? cfg.serviceToken : undefined;
   const embeddingModel =
     typeof cfg.embeddingModel === "string" ? cfg.embeddingModel : undefined;
   const vectorThreshold =
@@ -77,7 +79,7 @@ function readConfig(raw: Record<string, unknown> | undefined): PluresLmPluginCon
     typeof cfg.dreamingIngestIntervalSecs === "number" ? cfg.dreamingIngestIntervalSecs : undefined;
   const dreamingScoreIntervalSecs =
     typeof cfg.dreamingScoreIntervalSecs === "number" ? cfg.dreamingScoreIntervalSecs : undefined;
-  return { dbPath, serviceUrl, embeddingModel, vectorThreshold, maxResults, sourceDir, compressAboveTokens, reactivePx, reactivePxPolicy, dreaming, dreamingIngestIntervalSecs, dreamingScoreIntervalSecs };
+  return { dbPath, serviceUrl, serviceToken, embeddingModel, vectorThreshold, maxResults, sourceDir, compressAboveTokens, reactivePx, reactivePxPolicy, dreaming, dreamingIngestIntervalSecs, dreamingScoreIntervalSecs };
 }
 
 const MemorySearchSchema = {
@@ -197,7 +199,7 @@ function createPluresLmSearchTool(cfg: PluresLmPluginConfig) {
         return toolJson({ disabled: true, unavailable: true, error: "serviceUrl or dbPath not configured" });
       }
       const { manager } = cfg.serviceUrl
-        ? createPluresLmServiceSearchManager({ serviceUrl: cfg.serviceUrl })
+        ? createPluresLmServiceSearchManager({ serviceUrl: cfg.serviceUrl, serviceToken: cfg.serviceToken })
         : createPluresLmSearchManager(directConfig!);
       const rawResults = await manager.search(query, { maxResults });
       const results = rawResults
@@ -291,7 +293,7 @@ function createPluresLmGetTool(cfg: PluresLmPluginConfig) {
         return toolJson({ disabled: true, unavailable: true, error: "serviceUrl or dbPath not configured" });
       }
       const { manager } = cfg.serviceUrl
-        ? createPluresLmServiceSearchManager({ serviceUrl: cfg.serviceUrl })
+        ? createPluresLmServiceSearchManager({ serviceUrl: cfg.serviceUrl, serviceToken: cfg.serviceToken })
         : createPluresLmSearchManager(directConfig!);
       const result = await manager.readFile({ relPath, from, lines });
       return toolJson({ provider: "plureslm", ...result });

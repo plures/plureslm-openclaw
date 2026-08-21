@@ -20,7 +20,7 @@ await writeFile(
   "utf8",
 );
 
-const { server, url } = await startPluresLmHttpService(
+const { server, url, token } = await startPluresLmHttpService(
   {
     dbPath,
     sourceDir,
@@ -29,9 +29,10 @@ const { server, url } = await startPluresLmHttpService(
   },
   { port: 0 },
 );
+assert.ok(token, "service must require an authentication token by default");
 
 try {
-  const { manager } = createPluresLmServiceSearchManager({ serviceUrl: url });
+  const { manager } = createPluresLmServiceSearchManager({ serviceUrl: url, serviceToken: token });
   await manager.sync({ reason: "service-client-gate", force: true });
 
   const search = await manager.search("ASTER_SERVICE_CLIENT", { maxResults: 5 });
@@ -45,6 +46,12 @@ try {
   const embedding = await manager.probeEmbeddingAvailability();
   assert.equal(typeof embedding.ok, "boolean");
   assert.equal(typeof await manager.probeVectorAvailability(), "boolean");
+
+  const { manager: unauthorizedManager } = createPluresLmServiceSearchManager({ serviceUrl: url });
+  await assert.rejects(
+    unauthorizedManager.sync({ reason: "service-client-unauthorized", force: false }),
+    /plureslm service HTTP 401: unauthorized/,
+  );
 } finally {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   await rm(root, { recursive: true, force: true });

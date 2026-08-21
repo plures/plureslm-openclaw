@@ -30,6 +30,7 @@ function readConfig(raw) {
     const cfg = raw ?? {};
     const dbPath = typeof cfg.dbPath === "string" ? cfg.dbPath : undefined;
     const serviceUrl = typeof cfg.serviceUrl === "string" ? cfg.serviceUrl : undefined;
+    const serviceToken = typeof cfg.serviceToken === "string" ? cfg.serviceToken : undefined;
     const embeddingModel = typeof cfg.embeddingModel === "string" ? cfg.embeddingModel : undefined;
     const vectorThreshold = typeof cfg.vectorThreshold === "number" ? cfg.vectorThreshold : undefined;
     const maxResults = typeof cfg.maxResults === "number" ? cfg.maxResults : undefined;
@@ -40,7 +41,7 @@ function readConfig(raw) {
     const dreaming = typeof cfg.dreaming === "boolean" ? cfg.dreaming : undefined;
     const dreamingIngestIntervalSecs = typeof cfg.dreamingIngestIntervalSecs === "number" ? cfg.dreamingIngestIntervalSecs : undefined;
     const dreamingScoreIntervalSecs = typeof cfg.dreamingScoreIntervalSecs === "number" ? cfg.dreamingScoreIntervalSecs : undefined;
-    return { dbPath, serviceUrl, embeddingModel, vectorThreshold, maxResults, sourceDir, compressAboveTokens, reactivePx, reactivePxPolicy, dreaming, dreamingIngestIntervalSecs, dreamingScoreIntervalSecs };
+    return { dbPath, serviceUrl, serviceToken, embeddingModel, vectorThreshold, maxResults, sourceDir, compressAboveTokens, reactivePx, reactivePxPolicy, dreaming, dreamingIngestIntervalSecs, dreamingScoreIntervalSecs };
 }
 const MemorySearchSchema = {
     type: "object",
@@ -147,7 +148,7 @@ function createPluresLmSearchTool(cfg) {
                 return toolJson({ disabled: true, unavailable: true, error: "serviceUrl or dbPath not configured" });
             }
             const { manager } = cfg.serviceUrl
-                ? createPluresLmServiceSearchManager({ serviceUrl: cfg.serviceUrl })
+                ? createPluresLmServiceSearchManager({ serviceUrl: cfg.serviceUrl, serviceToken: cfg.serviceToken })
                 : createPluresLmSearchManager(directConfig);
             const rawResults = await manager.search(query, { maxResults });
             const results = rawResults
@@ -239,7 +240,7 @@ function createPluresLmGetTool(cfg) {
                 return toolJson({ disabled: true, unavailable: true, error: "serviceUrl or dbPath not configured" });
             }
             const { manager } = cfg.serviceUrl
-                ? createPluresLmServiceSearchManager({ serviceUrl: cfg.serviceUrl })
+                ? createPluresLmServiceSearchManager({ serviceUrl: cfg.serviceUrl, serviceToken: cfg.serviceToken })
                 : createPluresLmSearchManager(directConfig);
             const result = await manager.readFile({ relPath, from, lines });
             return toolJson({ provider: "plureslm", ...result });

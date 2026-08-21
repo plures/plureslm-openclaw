@@ -1,3 +1,4 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import { createPluresLmSearchManager } from "./memory-capability.js";
@@ -18,6 +19,10 @@ export type PluresLmServiceConfig = {
 export type PluresLmHttpServiceOptions = {
   host?: string;
   port: number;
+  /** Shared secret required for every endpoint other than liveness. */
+  token?: string;
+  /** Explicit, temporary compatibility escape hatch. Never the default. */
+  allowUnauthenticated?: boolean;
 };
 
 function jsonResponse(res: ServerResponse, statusCode: number, value: unknown): void {
@@ -65,6 +70,28 @@ function optionalStringArray(value: unknown): string[] | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function hasValidBearerToken(req: IncomingMessage, expected: string): boolean {
+  const authorization = req.headers.authorization;
+  if (typeof authorization !== "string") return false;
+  const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
+  if (!match) return false;
+  const suppliedToken = match[1];
+  if (!suppliedToken) return false;
+  const supplied = Buffer.from(suppliedToken, "utf8");
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  return supplied.length === expectedBuffer.length && timingSafeEqual(supplied, expectedBuffer);
+}
+
+function resolveServiceToken(
+  options: Pick<PluresLmHttpServiceOptions, "token" | "allowUnauthenticated">,
+): string | undefined {
+  if (options.allowUnauthenticated === true) return undefined;
+  const configured = options.token?.trim();
+  return configured && configured.length > 0
+    ? configured
+    : randomBytes(32).toString("base64url");
 }
 
 function sourceMatchesCorpus(source: "memory" | "sessions" | undefined, corpus: unknown): boolean {
@@ -139,13 +166,21 @@ export function createPluresLmMemoryService(config: PluresLmServiceConfig) {
 
 export type PluresLmMemoryService = ReturnType<typeof createPluresLmMemoryService>;
 
-export function createPluresLmHttpHandler(service: PluresLmMemoryService) {
+export function createPluresLmHttpHandler(
+  service: PluresLmMemoryService,
+  options: Pick<PluresLmHttpServiceOptions, "token" | "allowUnauthenticated">,
+) {
+  const token = resolveServiceToken(options);
   return async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const method = req.method ?? "GET";
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       if (method === "GET" && url.pathname === "/health") {
         jsonResponse(res, 200, await service.health());
+        return;
+      }
+      if (token && !hasValidBearerToken(req, token)) {
+        jsonResponse(res, 401, { ok: false, error: "unauthorized" });
         return;
       }
       if (method === "GET" && url.pathname === "/status") {
@@ -179,10 +214,14 @@ export function createPluresLmHttpHandler(service: PluresLmMemoryService) {
 export async function startPluresLmHttpService(
   config: PluresLmServiceConfig,
   options: PluresLmHttpServiceOptions,
-): Promise<{ server: Server; url: string }> {
+): Promise<{ server: Server; url: string; token?: string }> {
   const service = createPluresLmMemoryService(config);
   const host = options.host ?? "127.0.0.1";
-  const server = createServer(createPluresLmHttpHandler(service));
+  const token = resolveServiceToken(options);
+  const server = createServer(createPluresLmHttpHandler(service, {
+    token,
+    allowUnauthenticated: options.allowUnauthenticated,
+  }));
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(options.port, host, () => {
@@ -192,7 +231,7 @@ export async function startPluresLmHttpService(
   });
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : options.port;
-  return { server, url: `http://${host}:${port}` };
+  return { server, url: `http://${host}:${port}`, token };
 }
 
 export function assertJson(value: unknown): Json {

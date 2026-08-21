@@ -46,7 +46,7 @@ await writeFile(
   "utf8",
 );
 
-const { server, url } = await startPluresLmHttpService(
+const { server, url, token } = await startPluresLmHttpService(
   {
     dbPath,
     sourceDir,
@@ -55,12 +55,13 @@ const { server, url } = await startPluresLmHttpService(
   },
   { port: 0 },
 );
+assert.ok(token, "service must require an authentication token by default");
 
 try {
   const tools: RegisteredTool[] = [];
   let memoryCapability: unknown;
   const api = {
-    pluginConfig: { serviceUrl: url, maxResults: 5 },
+    pluginConfig: { serviceUrl: url, serviceToken: token, maxResults: 5 },
     logger: { info() {}, warn() {}, error() {}, debug() {} },
     registerMemoryCapability(value: unknown) {
       memoryCapability = value;

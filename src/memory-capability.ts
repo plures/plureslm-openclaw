@@ -728,12 +728,15 @@ export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
  * the host degrades gracefully rather than crashing.
  */
 export function buildMemoryCapability(
-  cfg: Partial<PluresLmCapabilityConfig> & { serviceUrl?: string },
+  cfg: Partial<PluresLmCapabilityConfig> & { serviceUrl?: string; serviceToken?: string },
 ): MemoryPluginCapability {
   const runtime: MemoryPluginRuntime = {
     async getMemorySearchManager() {
       if (cfg.serviceUrl) {
-        const { manager } = createPluresLmServiceSearchManager({ serviceUrl: cfg.serviceUrl });
+        const { manager } = createPluresLmServiceSearchManager({
+          serviceUrl: cfg.serviceUrl,
+          serviceToken: cfg.serviceToken,
+        });
         return { manager };
       }
       if (!cfg.dbPath) {
