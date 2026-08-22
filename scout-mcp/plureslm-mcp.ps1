@@ -1,6 +1,8 @@
 param(
     [string]$RepoRoot = "C:\Projects\plureslm-openclaw",
-    [string]$DbPath = "C:\Users\kbristol\.copilot\plugin-data\plureslm\scout-db"
+    [string]$DbPath,
+    [string]$ServiceUrl,
+    [string]$ServiceToken
 )
 
 trap { exit 1 }
@@ -12,9 +14,9 @@ function Resolve-NodePath {
     $cmd = Get-Command node -ErrorAction SilentlyContinue
     if ($cmd -and $cmd.Source) { return $cmd.Source }
     $candidates = @(
-        "$env:ProgramFiles\nodejs\node.exe",
-        "${env:ProgramFiles(x86)}\nodejs\node.exe",
-        "$env:LOCALAPPDATA\Programs\nodejs\node.exe"
+        (Join-Path (Join-Path $env:ProgramFiles "nodejs") "node.exe"),
+        (Join-Path (Join-Path ${env:ProgramFiles(x86)} "nodejs") "node.exe"),
+        (Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA "Programs") "nodejs") "node.exe")
     )
     foreach ($candidate in $candidates) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
@@ -29,6 +31,16 @@ if (-not (Test-Path -LiteralPath $script)) {
 }
 
 $env:PLURESLM_REPO_ROOT = $RepoRoot
-$env:PLURESLM_DB_PATH = $DbPath
+if ($ServiceUrl) { $env:PLURESLM_SCOUT_SERVICE_URL = $ServiceUrl }
+if ($ServiceToken) { $env:PLURESLM_SCOUT_SERVICE_TOKEN = $ServiceToken }
+if ($DbPath) { $env:PLURESLM_DB_PATH = $DbPath }
+if (-not $ServiceUrl -and -not $DbPath) {
+    throw "Specify -ServiceUrl for the shared PluresLM service or -DbPath for an explicit single-consumer direct store."
+}
 
-& $node $script --repo-root $RepoRoot --db-path $DbPath
+$arguments = @("--repo-root", $RepoRoot)
+if ($ServiceUrl) { $arguments += "--service-url=$ServiceUrl" }
+if ($ServiceToken) { $arguments += "--service-token=$ServiceToken" }
+if ($DbPath) { $arguments += "--db-path=$DbPath" }
+
+& $node $script @arguments

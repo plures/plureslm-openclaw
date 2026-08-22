@@ -1,6 +1,9 @@
 # PluresLM Scout MCP server
 
-This is the Scout-native fallback for PluresLM memory while Scout's desktop chat surface does not inject `UserPromptSubmit` hook `additionalContext`.
+This is Scout's PluresLM memory client. Its recommended mode is an authenticated
+connection to the shared PluresLM memory service, which is the only process that
+opens the shared PluresDB store. Direct mode remains only for an explicitly
+single-consumer store.
 
 It exposes PluresDB memory and Praxis entry points as MCP tools:
 
@@ -13,7 +16,28 @@ It exposes PluresDB memory and Praxis entry points as MCP tools:
 
 The `.px` tools require a built `px-napi` module. Set `PLURESLM_PX_NAPI_MODULE` to the package name or absolute module path once `praxis-lang/crates/px-napi` is built.
 
-## Run
+## Recommended: shared service mode
+
+Start `src/service-cli.ts` with its default authentication enabled, then pass
+the same service URL and token to Scout. The Scout process never opens the
+database in this mode, even if a `DbPath` is also supplied accidentally.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File "C:\Projects\plureslm-openclaw\scout-mcp\plureslm-mcp.ps1" `
+  -RepoRoot "C:\Projects\plureslm-openclaw" `
+  -ServiceUrl "http://127.0.0.1:3100" `
+  -ServiceToken "<service-token>"
+```
+
+The service accepts unauthenticated `GET /health` only. Status, sync, recall,
+and read require `Authorization: Bearer <service-token>`.
+
+## Explicit direct mode
+
+Use this only when Scout is the sole process using the supplied store. Never
+point `DbPath` at a store owned by the PluresLM service, OpenClaw, or another
+Scout process.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
@@ -22,7 +46,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -DbPath "C:\Users\kbristol\.copilot\plugin-data\plureslm\scout-db"
 ```
 
-## Scout config shape
+## Scout config shape (service mode)
 
 Add a custom MCP server entry equivalent to:
 
@@ -38,8 +62,10 @@ Add a custom MCP server entry equivalent to:
       "C:\\Projects\\plureslm-openclaw\\scout-mcp\\plureslm-mcp.ps1",
       "-RepoRoot",
       "C:\\Projects\\plureslm-openclaw",
-      "-DbPath",
-      "C:\\Users\\kbristol\\.copilot\\plugin-data\\plureslm\\scout-db"
+      "-ServiceUrl",
+      "http://127.0.0.1:3100",
+      "-ServiceToken",
+      "<service-token>"
     ],
     "tools": [
       "plures_status",
@@ -53,4 +79,7 @@ Add a custom MCP server entry equivalent to:
 }
 ```
 
-Keep the native hook plugin installed as evidence and future-ready support for true autoRecall. Today, Scout invokes the hook and the hook emits recall context, but this desktop chat surface does not inject that context into the model.
+In service mode, `plures_recall` uses ranked service results and returns a path
+that `plures_read` can use. Graph expansion and `px_*` store-policy tools
+remain direct-mode-only until those service endpoints exist; they fail clearly
+instead of opening the shared store.

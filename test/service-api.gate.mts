@@ -5,10 +5,18 @@ import { join } from "node:path";
 
 import { startPluresLmHttpService } from "../src/service.js";
 
-async function requestJson(url: string, path: string, body?: Record<string, unknown>) {
+async function requestJson(
+  url: string,
+  path: string,
+  body?: Record<string, unknown>,
+  serviceToken?: string,
+) {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["content-type"] = "application/json";
+  if (serviceToken) headers.authorization = `Bearer ${serviceToken}`;
   const response = await fetch(`${url}${path}`, body === undefined ? undefined : {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
   const text = await response.text();
@@ -38,7 +46,7 @@ await writeFile(
   "utf8",
 );
 
-const { server, url } = await startPluresLmHttpService(
+const { server, url, token } = await startPluresLmHttpService(
   {
     dbPath,
     sourceDir,
@@ -47,19 +55,20 @@ const { server, url } = await startPluresLmHttpService(
   },
   { port: 0 },
 );
+assert.ok(token, "service must require an authentication token by default");
 
 try {
   const health = await requestJson(url, "/health");
   assert.equal(health.ok, true);
   assert.equal(health.provider, "plureslm");
 
-  await requestJson(url, "/sync", { reason: "service-api-gate", force: true });
+  await requestJson(url, "/sync", { reason: "service-api-gate", force: true }, token);
 
   const search = await requestJson(url, "/search", {
     query: "ZEPHYR_SERVICE_BOUNDARY",
     maxResults: 5,
     corpus: "memory",
-  });
+  }, token);
   assert.equal(search.provider, "plureslm");
   assert.equal(search.query, "ZEPHYR_SERVICE_BOUNDARY");
   assert.equal(typeof search.count, "number");
@@ -69,7 +78,7 @@ try {
   assert.ok(first.path, "search hit should include path");
   assert.match(String(first.snippet), /ZEPHYR_SERVICE_BOUNDARY/);
 
-  const get = await requestJson(url, "/get", { path: first.path, from: 1, lines: 5 });
+  const get = await requestJson(url, "/get", { path: first.path, from: 1, lines: 5 }, token);
   assert.equal(get.provider, "plureslm");
   assert.match(JSON.stringify(get), /ZEPHYR_SERVICE_BOUNDARY/);
 } finally {

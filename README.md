@@ -23,6 +23,8 @@ A read-path memory plugin that recalls from a [PluresDB](https://github.com/plur
 | Key               | Type    | Default                  | Description                                                        |
 | ----------------- | ------- | ------------------------ | ------------------------------------------------------------------ |
 | `dbPath`          | string  | _(required to activate)_ | Absolute path to the PluresDB store directory (`conf`/`db`/`blobs`/`snap.*`). |
+| `serviceUrl`      | string  | _(none)_                 | Shared local PluresLM service URL; takes precedence over `dbPath`. |
+| `serviceToken`    | string  | _(required by service)_  | Bearer token for the shared PluresLM service.                       |
 | `embeddingModel`  | string  | `BAAI/bge-small-en-v1.5` | HuggingFace embedding model id used for vector recall.             |
 | `vectorThreshold` | number  | `0.3`                    | Cosine-similarity floor (0–1) for vector hits.                     |
 | `maxResults`      | integer | `8`                      | Default maximum recall hits.                                       |
@@ -39,6 +41,11 @@ OpenClaw host
 ```
 
 The TypeScript layer is a thin, read-only IO boundary. All storage/search logic lives in the native PluresDB addon — this package never reimplements it and never mutates the store.
+
+When `serviceUrl` is configured, the plugin is an authenticated client and does
+not open the store. The local service requires a bearer token by default for
+all endpoints except `GET /health`; `src/service-cli.ts` creates a token file
+when no explicit token is provided.
 
 ### Operational notes
 

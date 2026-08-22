@@ -40,6 +40,7 @@ type ServiceStatus = {
 
 export type PluresLmServiceClientConfig = {
   serviceUrl: string;
+  serviceToken?: string;
 };
 
 function normalizeServiceUrl(serviceUrl: string): string {
@@ -52,11 +53,14 @@ async function requestJson(
   baseUrl: string,
   path: string,
   body?: JsonBody,
+  serviceToken?: string,
 ): Promise<Record<string, unknown>> {
-  const response = await fetch(`${baseUrl}${path}`, body === undefined ? undefined : {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["content-type"] = "application/json";
+  if (serviceToken?.trim()) headers.authorization = `Bearer ${serviceToken.trim()}`;
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
+    headers,
   });
   const text = await response.text();
   let parsed: unknown;
@@ -151,10 +155,11 @@ function parseStatus(value: Record<string, unknown>): ServiceStatus {
 
 export function createPluresLmServiceSearchManager(config: PluresLmServiceClientConfig) {
   const baseUrl = normalizeServiceUrl(config.serviceUrl);
+  const serviceToken = config.serviceToken?.trim() || undefined;
   let cachedStatus: ServiceStatus = { backend: "builtin", provider: "plureslm" };
 
   async function fetchStatus(): Promise<ServiceStatus> {
-    cachedStatus = parseStatus(await requestJson(baseUrl, "/status"));
+    cachedStatus = parseStatus(await requestJson(baseUrl, "/status", undefined, serviceToken));
     return cachedStatus;
   }
 
@@ -169,7 +174,7 @@ export function createPluresLmServiceSearchManager(config: PluresLmServiceClient
     const result = await requestJson(baseUrl, "/search", {
       query,
       maxResults: opts?.maxResults,
-    });
+    }, serviceToken);
     const results = Array.isArray(result.results) ? result.results : [];
     return results.map(parseSearchResult).filter((item): item is ServiceSearchResult => item !== null);
   }
@@ -183,7 +188,7 @@ export function createPluresLmServiceSearchManager(config: PluresLmServiceClient
       path: params.relPath,
       from: params.from,
       lines: params.lines,
-    });
+    }, serviceToken);
     return parseReadResult(result);
   }
 
@@ -197,7 +202,7 @@ export function createPluresLmServiceSearchManager(config: PluresLmServiceClient
       reason: params?.reason,
       force: params?.force,
       sessionFiles: params?.sessionFiles,
-    });
+    }, serviceToken);
     params?.progress?.({ completed: 1, total: 1, label: params?.reason ?? "service" });
   }
 

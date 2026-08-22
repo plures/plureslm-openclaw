@@ -39,7 +39,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx test/recall.gate.mts && tsx test/p3p4.gate.mts && tsx test/p3p4-hardened.gate.mts && tsx test/p3p4-qa.gate.mts && tsx test/p3p4-verify.driver.mts && tsx test/p2-salience-recall.gate.mts",
+    "test": "tsx test/recall.gate.mts && tsx test/p3p4.gate.mts && tsx test/p3p4-hardened.gate.mts && tsx test/p3p4-qa.gate.mts && tsx test/p3p4-verify.driver.mts && tsx test/p2-salience-recall.gate.mts && npm run test:service-auth",
     "test:recall": "tsx test/recall.gate.mts",
     "test:p3p4": "tsx test/p3p4.gate.mts",
     "test:p3p4-hardened": "tsx test/p3p4-hardened.gate.mts",
@@ -51,6 +51,8 @@
     "test:vitest": "vitest run",
     "gate": "tsc -p tsconfig.json && tsx test/recall.gate.mts && tsx test/p3p4.gate.mts",
     "test:service": "tsx test/service-api.gate.mts",
+    "test:service-auth": "tsx test/service-auth.gate.mts && tsx test/service-api.gate.mts && tsx test/service-client.gate.mts && tsx test/service-plugin-registration.gate.mts && tsx test/scout-mcp-service-mode.gate.mts",
+    "test:scout-service": "tsx test/scout-mcp-service-mode.gate.mts",
     "test:source-dir-recall": "tsx test/source-dir-recall.gate.mts",
     "test:exact-id-lookup": "tsx test/exact-id-lookup.gate.mts"
   },

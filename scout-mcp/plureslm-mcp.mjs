@@ -2,9 +2,9 @@
 /**
  * PluresLM Scout MCP server.
  *
- * Dependency-free stdio MCP/JSON-RPC server that exposes the built PluresLM
- * store to Scout without depending on OpenClaw's plugin memory capability seam.
- * It imports dist/pluresdb.js, so run `pnpm build` before starting.
+ * Dependency-free stdio MCP/JSON-RPC server. In normal service mode it is an
+ * authenticated client of the one PluresLM store owner; direct-store mode is
+ * retained only for an explicitly configured single-consumer installation.
  */
 
 import { createHash } from "node:crypto";
@@ -48,6 +48,8 @@ function readConfig() {
   );
   return {
     repoRoot,
+    serviceUrl: argValue("service-url") ?? process.env.PLURESLM_SCOUT_SERVICE_URL,
+    serviceToken: argValue("service-token") ?? process.env.PLURESLM_SCOUT_SERVICE_TOKEN,
     dbPath: argValue("db-path") ?? process.env.PLURESLM_DB_PATH,
     sourceDir: argValue("source-dir") ?? process.env.PLURESLM_SOURCE_DIR,
     embeddingModel:
@@ -76,9 +78,43 @@ let storePromise = null;
 let nativeStatusPromise = null;
 let prewarmStarted = false;
 
+function serviceBaseUrl() {
+  const url = config.serviceUrl?.trim().replace(/\/+$/, "");
+  if (!url) throw new Error("PLURESLM_SCOUT_SERVICE_URL or --service-url is required for service mode.");
+  return url;
+}
+
+async function serviceRequest(path, body = undefined) {
+  const headers = {};
+  if (body !== undefined) headers["content-type"] = "application/json";
+  if (config.serviceToken?.trim()) headers.authorization = `Bearer ${config.serviceToken.trim()}`;
+  const response = await fetch(`${serviceBaseUrl()}${path}`, {
+    ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
+    headers,
+  });
+  const text = await response.text();
+  let parsed;
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`PluresLM service returned non-JSON ${response.status}: ${text}`);
+  }
+  if (!response.ok) {
+    const detail = parsed && typeof parsed === "object" && parsed.error ? parsed.error : text;
+    throw new Error(`PluresLM service HTTP ${response.status}: ${detail}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("PluresLM service response must be a JSON object.");
+  }
+  return parsed;
+}
+
 async function getStore() {
   if (storePromise) return storePromise;
   storePromise = (async () => {
+    if (config.serviceUrl) {
+      throw new Error("Direct store access is unavailable in service mode. Use PluresLM service-backed memory tools.");
+    }
     if (!config.dbPath) {
       throw new Error("PLURESLM_DB_PATH or --db-path is required.");
     }
@@ -101,6 +137,7 @@ async function getStore() {
 }
 
 async function getNativeStatus() {
+  if (config.serviceUrl) return quickStatus();
   if (nativeStatusPromise) return nativeStatusPromise;
   nativeStatusPromise = (async () => {
     const store = await getStore();
@@ -119,7 +156,16 @@ async function getNativeStatus() {
   return nativeStatusPromise;
 }
 
-function quickStatus() {
+async function quickStatus() {
+  if (config.serviceUrl) {
+    const status = await serviceRequest("/status");
+    return {
+      provider: "plureslm",
+      backend: "service",
+      serviceUrl: serviceBaseUrl(),
+      status,
+    };
+  }
   const modulePath = resolve(config.repoRoot, "dist", "pluresdb.js");
   const runtimeAvailable = existsSync(modulePath);
   return {
@@ -138,7 +184,8 @@ function prewarmStore() {
   if (prewarmStarted) return;
   prewarmStarted = true;
   const timer = setTimeout(() => {
-    void getStore().catch(() => {
+    const warm = config.serviceUrl ? quickStatus() : getStore();
+    void warm.catch(() => {
       // Explicit tool calls surface load/configuration errors.
     });
   }, 5000);
@@ -352,7 +399,7 @@ async function loadPxNapi() {
 const tools = [
   {
     name: "plures_status",
-    description: "Report fast PluresLM MCP server status without loading the embedding model.",
+    description: "Report PluresLM service or direct-store status without loading embeddings in direct mode.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
   },
   {
@@ -376,12 +423,16 @@ const tools = [
   },
   {
     name: "plures_read",
-    description: "Read one PluresLM memory node by id.",
+    description: "Read one PluresLM memory by id in direct mode, or by a path returned from recall in service mode.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      required: ["id"],
-      properties: { id: { type: "string" } },
+      properties: {
+        id: { type: "string" },
+        path: { type: "string" },
+        from: { type: "number" },
+        lines: { type: "number" },
+      },
     },
   },
   {
@@ -483,7 +534,7 @@ const tools = [
 
 async function callTool(name, args = {}) {
   if (name === "plures_status") {
-    return textResult(quickStatus());
+    return textResult(await quickStatus());
   }
 
   if (name === "plures_native_status") {
@@ -491,6 +542,39 @@ async function callTool(name, args = {}) {
   }
 
   if (name === "plures_recall") {
+    if (config.serviceUrl) {
+      const query = String(args.query ?? "");
+      if (!query.trim()) return textResult({ error: "query is required" }, true);
+      const response = await serviceRequest("/search", {
+        query,
+        maxResults: numberValue(args.maxResults, config.maxResults),
+        minScore: numberValue(args.minScore),
+        corpus: typeof args.corpus === "string" ? args.corpus : undefined,
+      });
+      const results = Array.isArray(response.results)
+        ? response.results.map((hit) => ({
+            id: typeof hit.path === "string" ? `${hit.path}:${hit.startLine ?? 1}:${hit.endLine ?? 1}` : undefined,
+            path: hit.path,
+            startLine: hit.startLine,
+            endLine: hit.endLine,
+            score: hit.score,
+            vectorScore: hit.vectorScore,
+            textScore: hit.textScore,
+            via: "service-hybrid",
+            source: hit.source,
+            citation: hit.citation,
+            snippet: hit.snippet,
+          }))
+        : [];
+      return textResult({
+        provider: "plureslm",
+        backend: "service",
+        query,
+        count: results.length,
+        graphAvailable: false,
+        results,
+      });
+    }
     const store = await getStore();
     const query = String(args.query ?? "");
     if (!query.trim()) return textResult({ error: "query is required" }, true);
@@ -530,6 +614,18 @@ async function callTool(name, args = {}) {
   }
 
   if (name === "plures_read") {
+    if (config.serviceUrl) {
+      const path = String(args.path ?? "");
+      if (!path.trim()) {
+        return textResult({ error: "path is required in service mode; pass a path returned by plures_recall" }, true);
+      }
+      const result = await serviceRequest("/get", {
+        path,
+        from: numberValue(args.from),
+        lines: numberValue(args.lines),
+      });
+      return textResult({ provider: "plureslm", backend: "service", ...result });
+    }
     const store = await getStore();
     const id = String(args.id ?? "");
     if (!id.trim()) return textResult({ error: "id is required" }, true);
@@ -538,6 +634,14 @@ async function callTool(name, args = {}) {
   }
 
   if (name === "plures_sync") {
+    if (config.serviceUrl) {
+      const result = await serviceRequest("/sync", {
+        reason: "scout-mcp",
+        force: args.force === true,
+        sessionFiles: Array.isArray(args.sessionFiles) ? args.sessionFiles : undefined,
+      });
+      return textResult({ provider: "plureslm", backend: "service", ...result });
+    }
     const store = await getStore();
     const work = [];
     for (const filePath of Array.isArray(args.sessionFiles) ? args.sessionFiles : []) {
