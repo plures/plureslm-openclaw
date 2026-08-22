@@ -47,6 +47,21 @@ not open the store. The local service requires a bearer token by default for
 all endpoints except `GET /health`; `src/service-cli.ts` creates a token file
 when no explicit token is provided.
 
+## Scout Windows release install
+
+Download `plureslm-scout-windows-<version>.zip` and its `.sha256` companion
+from the GitHub release, verify the checksum, extract it, then run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-PluresLMScout.ps1
+```
+
+The installer copies a self-contained runtime to `%LOCALAPPDATA%\PluresLM\scout`,
+creates a random local bearer token, starts a loopback-only service, registers
+it to start at user logon, and enables the Scout hook/MCP plugin. The token is
+kept in the local data directory and is read by the launcher and hook; it is not
+published in the release artifact. Restart Scout after installation.
+
 ### Operational notes
 
 - **Exclusive lock.** A PluresDB store directory can be opened by only one handle per process. `PluresLmStore` memoizes one handle per `dbPath` (process-local singleton). Do not point two plugins at the same store path in one process.
@@ -59,6 +74,8 @@ pnpm install        # links @plures/pluresdb-native from ../pluresdb/crates/plur
 pnpm build          # tsc -> dist/index.js
 pnpm check          # tsc --noEmit
 pnpm test           # vitest (recall gate)
+pnpm run test:service-auth  # authenticated service, Scout MCP/hook service mode
+./scripts/test-scout-windows-release.ps1 # package and isolated installer gate (Windows)
 ```
 
 ## License

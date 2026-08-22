@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  scout-windows-release:
+    name: Scout Windows release gate
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: plureslm-openclaw
+
+    steps:
+      - name: Checkout PluresLM
+        uses: actions/checkout@v4
+        with:
+          path: plureslm-openclaw
+
+      - name: Checkout PluresDB native dependency
+        uses: actions/checkout@v4
+        with:
+          repository: plures/pluresdb
+          path: pluresdb
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Validate TypeScript and authenticated service mode
+        shell: pwsh
+        run: |
+          pnpm run check
+          pnpm run build
+          pnpm run test:service-auth
+
+      - name: Validate PowerShell and JavaScript entry points
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -Recurse -File | Where-Object { $_.Extension -eq ".ps1" -and $_.FullName -notlike "*\\node_modules\\*" } | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Error "$($_.FullName): $($errors | ForEach-Object Message | Out-String)"
+            }
+          }
+          if ($failed) { exit 1 }
+          node --check .\scout-hooks\hooks\plureslm-autorecall.mjs
+          node --check .\scout-hooks\hooks\plureslm-autorecall-core.mjs
+          node --check .\scout-mcp\plureslm-mcp.mjs
+
+      - name: Package and install the release in isolation
+        shell: pwsh
+        run: |
+          .\scripts\test-scout-windows-release.ps1
