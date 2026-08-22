@@ -45,7 +45,7 @@ const config: PluresLmServiceConfig = {
   reactivePxPolicy: readArg("reactivePxPolicy") ?? process.env.PLURESLM_REACTIVE_PX_POLICY,
 };
 
-const explicitToken = readArg("token") ?? process.env.PLURESLM_SERVICE_TOKEN;
+const explicitToken = (readArg("token") ?? process.env.PLURESLM_SERVICE_TOKEN)?.trim() || undefined;
 const allowUnauthenticated =
   readFlag("no-auth") || process.env.PLURESLM_SERVICE_ALLOW_UNAUTHENTICATED === "1";
 const { server, url, token } = await startPluresLmHttpService(config, {
