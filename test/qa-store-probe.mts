@@ -51,7 +51,7 @@ function ensureBinding(): string | null {
       if (rd !== dir) cands.push(join(rd, file));
     } catch {}
   } catch {}
-  cands.push(join("C:/Projects/pluresdb/crates/pluresdb-node", file));
+  cands.push(join("C:/Projects/praxis-platform/crates/pluresdb/crates/pluresdb-node", file));
   for (const c of cands) if (existsSync(c)) return c;
   return null;
 }

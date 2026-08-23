@@ -45,14 +45,14 @@ function sourceCrateRoots(): string[] {
   if (env) roots.add(env);
   let here = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 8; i++) {
-    roots.add(join(here, "pluresdb", "crates", "pluresdb-node"));
-    roots.add(join(dirname(here), "pluresdb", "crates", "pluresdb-node"));
+    roots.add(join(here, "praxis-platform", "crates", "pluresdb", "crates", "pluresdb-node"));
+    roots.add(join(dirname(here), "praxis-platform", "crates", "pluresdb", "crates", "pluresdb-node"));
     const up = dirname(here);
     if (up === here) break;
     here = up;
   }
   // Known sibling checkout for this repo.
-  roots.add("C:/Projects/pluresdb/crates/pluresdb-node");
+  roots.add("C:/Projects/praxis-platform/crates/pluresdb/crates/pluresdb-node");
   return [...roots];
 }
 

@@ -2,7 +2,7 @@
 
 **PluresLM memory and durable-task capability for [OpenClaw](https://github.com/openclaw/openclaw).**
 
-A read-and-write memory plugin that recalls from a [PluresDB](https://github.com/plures/pluresdb) store via the native `@plures/pluresdb-native` addon. It registers OpenClaw's exclusive **memory capability** and serves ranked `search` / `readFile` / `status`, ingestion, dreaming persistence, and a service-backed durable task resource.
+A read-and-write memory plugin that recalls from a [PluresDB](https://github.com/plures/praxis-platform/tree/main/crates/pluresdb) store via the native `@plures/pluresdb-native` addon. It registers OpenClaw's exclusive **memory capability** and serves ranked `search` / `readFile` / `status`, ingestion, dreaming persistence, and a service-backed durable task resource.
 
 > **Current scope.** Memory ingestion and durable task records write only through the governed store. The task service provides PX-admitted lifecycle state, evidence, an auditable event trail, user-decision pauses, and durable observations (findings, tool results, failures, progress, and plans) that can feed later reactive procedures. It deliberately does **not** dispatch or lease agents yet: the linked native store lacks a conditional-update primitive required to make those effects safe.
 
@@ -79,7 +79,7 @@ published in the release artifact. Restart Scout after installation.
 ## Build & test
 
 ```bash
-pnpm install        # links @plures/pluresdb-native from ../pluresdb/crates/pluresdb-node
+pnpm install        # links @plures/pluresdb-native from ../praxis-platform/crates/pluresdb/crates/pluresdb-node
 pnpm build          # tsc -> dist/index.js
 pnpm check          # tsc --noEmit
 pnpm test           # vitest (recall gate)

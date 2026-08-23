@@ -23,11 +23,11 @@ jobs:
         with:
           path: plureslm-openclaw
 
-      - name: Checkout PluresDB native dependency
+      - name: Checkout canonical PluresDB native dependency
         uses: actions/checkout@v4
         with:
-          repository: plures/pluresdb
-          path: pluresdb
+          repository: plures/praxis-platform
+          path: praxis-platform
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -36,11 +36,11 @@ jobs:
 
       - name: Build PluresDB native addon
         shell: pwsh
-        working-directory: pluresdb/crates/pluresdb-node
+        working-directory: praxis-platform/crates/pluresdb/crates/pluresdb-node
         run: |
           npm install
           npm run build
-          $addon = Join-Path $env:GITHUB_WORKSPACE "pluresdb\crates\pluresdb-node\pluresdb-node.win32-x64-msvc.node"
+          $addon = Join-Path $env:GITHUB_WORKSPACE "praxis-platform\crates\pluresdb\crates\pluresdb-node\pluresdb-node.win32-x64-msvc.node"
           if (-not (Test-Path -LiteralPath $addon)) { throw "Built PluresDB addon is missing: $addon" }
           "PLURESLM_NATIVE_ADDON_PATH=$addon" >> $env:GITHUB_ENV
 
