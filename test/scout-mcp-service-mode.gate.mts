@@ -114,6 +114,8 @@ try {
     !toolList.tools?.some((tool) => tool.name === "plures_task_decision_resolve"),
     "Scout MCP must not expose user decision resolution as an agent-callable tool",
   );
+  assert.ok(toolList.tools?.some((tool) => tool.name === "plures_task_observe"));
+  assert.ok(toolList.tools?.some((tool) => tool.name === "plures_task_observation_get"));
   const sync = toolPayload(await mcp.request("tools/call", {
     name: "plures_sync",
     arguments: { force: true },
@@ -168,6 +170,25 @@ try {
     arguments: { taskId: task.id, status: "in_progress", actor: "scout" },
   }));
   assert.equal((inProgress.task as Record<string, unknown>).status, "in_progress");
+
+  const observed = toolPayload(await mcp.request("tools/call", {
+    name: "plures_task_observe",
+    arguments: {
+      taskId: task.id,
+      kind: "tool_result",
+      summary: "Scout MCP observation gate completed.",
+      source: "scout-mcp-service-mode.gate",
+    },
+  }));
+  const observation = observed.observation as Record<string, unknown>;
+  assert.match(String(observation.id), /^orch:observation:/);
+  assert.equal((observed.task as Record<string, unknown>).status, "in_progress");
+
+  const readObservation = toolPayload(await mcp.request("tools/call", {
+    name: "plures_task_observation_get",
+    arguments: { observationId: observation.id },
+  }));
+  assert.deepEqual(readObservation.observation, observation);
 
   const evidence = toolPayload(await mcp.request("tools/call", {
     name: "plures_task_evidence",

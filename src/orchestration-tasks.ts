@@ -5,6 +5,7 @@ import type { PluresLmStore } from "./pluresdb.js";
 const TASK_ID_PREFIX = "orch:task:";
 const EVENT_ID_PREFIX = "orch:event:";
 const EVIDENCE_ID_PREFIX = "orch:evidence:";
+const OBSERVATION_ID_PREFIX = "orch:observation:";
 const DECISION_ID_PREFIX = "orch:decision:";
 const MAX_TITLE_LENGTH = 500;
 const MAX_DESCRIPTION_LENGTH = 20_000;
@@ -46,7 +47,7 @@ export type OrchestrationEvent = {
   type: "orchestration-event";
   category: "orchestration";
   taskId: string;
-  eventType: "task_created" | "task_transitioned" | "evidence_added" | "decision_requested" | "decision_resolved";
+  eventType: "task_created" | "task_transitioned" | "evidence_added" | "observation_recorded" | "decision_requested" | "decision_resolved";
   actor: string;
   sequence: number;
   createdAt: string;
@@ -54,6 +55,7 @@ export type OrchestrationEvent = {
   fromStatus?: OrchestrationTaskStatus;
   toStatus?: OrchestrationTaskStatus;
   evidenceId?: string;
+  observationId?: string;
   decisionRequestId?: string;
 };
 
@@ -72,6 +74,21 @@ export type OrchestrationEvidence = {
   summary: string;
   source: string;
   details?: string;
+  createdAt: string;
+};
+
+export type OrchestrationObservationKind = "finding" | "tool_result" | "failure" | "progress" | "plan";
+
+export type OrchestrationObservation = {
+  id: string;
+  type: "orchestration-observation";
+  category: "orchestration";
+  taskId: string;
+  kind: OrchestrationObservationKind;
+  summary: string;
+  source: string;
+  details?: string;
+  actor: string;
   createdAt: string;
 };
 
@@ -118,21 +135,23 @@ function pageLimit(value: unknown): number {
   return Math.min(value, MAX_EVENT_PAGE_LIMIT);
 }
 
-function eventCursor(value: unknown): { sequence: number; id: string } | undefined {
+function eventCursor(value: unknown): { sequence: number; createdAt?: string; id: string } | undefined {
   if (value === undefined) return undefined;
   const cursor = requiredString(value, "cursor", 250);
-  const match = /^(\d+):(orch:event:.+)$/.exec(cursor);
-  if (!match) throw new TaskInputError("cursor must be an event cursor");
-  const rawSequence = match[1];
-  const id = match[2];
+  const match = /^(\d+):(.+):(orch:event:.+)$/.exec(cursor);
+  const legacyMatch = /^(\d+):(orch:event:.+)$/.exec(cursor);
+  if (!match && !legacyMatch) throw new TaskInputError("cursor must be an event cursor");
+  const rawSequence = match?.[1] ?? legacyMatch?.[1];
+  const createdAt = match?.[2];
+  const id = match?.[3] ?? legacyMatch?.[2];
   if (rawSequence === undefined || id === undefined) throw new TaskInputError("cursor must be an event cursor");
   const sequence = Number(rawSequence);
   if (!Number.isSafeInteger(sequence)) throw new TaskInputError("cursor sequence is invalid");
-  return { sequence, id };
+  return { sequence, ...(createdAt === undefined ? {} : { createdAt }), id };
 }
 
 function cursorForEvent(event: OrchestrationEvent): string {
-  return `${event.sequence}:${event.id}`;
+  return `${event.sequence}:${event.createdAt}:${event.id}`;
 }
 
 function labelsFrom(value: unknown): string[] {
@@ -171,6 +190,13 @@ function taskStatusFrom(value: unknown): OrchestrationTaskStatus {
     || value === "blocked" || value === "done" || value === "cancelled"
   ) return value;
   throw new TaskInputError("status must be queued, ready, in_progress, waiting_for_user, blocked, done, or cancelled");
+}
+
+function observationKindFrom(value: unknown): OrchestrationObservationKind {
+  if (value === "finding" || value === "tool_result" || value === "failure" || value === "progress" || value === "plan") {
+    return value;
+  }
+  throw new TaskInputError("kind must be finding, tool_result, failure, progress, or plan");
 }
 
 function taskFromRecord(record: Record<string, unknown> | null): OrchestrationTask | null {
@@ -364,6 +390,75 @@ export function addOrchestrationEvidence(
   return { task: updated, evidence };
 }
 
+function observationFromRecord(record: Record<string, unknown> | null): OrchestrationObservation | null {
+  if (!record || record.type !== "orchestration-observation" || record.category !== "orchestration") return null;
+  try {
+    const id = requiredString(record.id, "observation id", 200);
+    if (!id.startsWith(OBSERVATION_ID_PREFIX)) return null;
+    const details = optionalString(record.details, "details", MAX_DETAIL_LENGTH);
+    return {
+      id,
+      type: "orchestration-observation",
+      category: "orchestration",
+      taskId: requiredString(record.taskId, "taskId", 200),
+      kind: observationKindFrom(record.kind),
+      summary: requiredString(record.summary, "summary", MAX_SUMMARY_LENGTH),
+      source: requiredString(record.source, "source", 500),
+      ...(details ? { details } : {}),
+      actor: requiredString(record.actor, "actor", 200),
+      createdAt: requiredString(record.createdAt, "createdAt", 100),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function getOrchestrationObservation(store: PluresLmStore, id: string): OrchestrationObservation | null {
+  if (!id.startsWith(OBSERVATION_ID_PREFIX)) return null;
+  return observationFromRecord(store.get(id));
+}
+
+export function recordOrchestrationObservation(
+  store: PluresLmStore,
+  id: string,
+  params: Record<string, unknown>,
+): { task: OrchestrationTask; observation: OrchestrationObservation } {
+  const task = requireTask(store, id);
+  const kind = observationKindFrom(params.kind);
+  const summary = requiredString(params.summary, "summary", MAX_SUMMARY_LENGTH);
+  const source = optionalString(params.source, "source", 500) ?? "scout";
+  const details = optionalString(params.details, "details", MAX_DETAIL_LENGTH);
+  const actor = optionalActor(params.actor);
+  requireAdmission(store, "orchestration_observation_record", task.id, {
+    observation_kind: kind,
+    summary,
+    source,
+    task_status: task.status,
+  });
+  const observation: OrchestrationObservation = {
+    id: `${OBSERVATION_ID_PREFIX}${randomUUID()}`,
+    type: "orchestration-observation",
+    category: "orchestration",
+    taskId: task.id,
+    kind,
+    summary,
+    source,
+    ...(details ? { details } : {}),
+    actor,
+    createdAt: new Date().toISOString(),
+  };
+  persist(store, observation.id, observation, "orchestration observation");
+  recordEvent(store, {
+    taskId: task.id,
+    eventType: "observation_recorded",
+    actor,
+    sequence: task.revision,
+    observationId: observation.id,
+    details: summary,
+  });
+  return { task, observation };
+}
+
 export function createDecisionRequest(
   store: PluresLmStore,
   id: string,
@@ -480,10 +575,11 @@ export function resolveDecisionRequest(
 function eventFromRecord(record: Record<string, unknown>): OrchestrationEvent | null {
   if (record.type !== "orchestration-event" || record.category !== "orchestration") return null;
   const eventType = record.eventType;
-  if (eventType !== "task_created" && eventType !== "task_transitioned" && eventType !== "evidence_added" && eventType !== "decision_requested" && eventType !== "decision_resolved") return null;
+  if (eventType !== "task_created" && eventType !== "task_transitioned" && eventType !== "evidence_added" && eventType !== "observation_recorded" && eventType !== "decision_requested" && eventType !== "decision_resolved") return null;
   try {
     const details = optionalString(record.details, "details", MAX_DETAIL_LENGTH);
     const evidenceId = optionalString(record.evidenceId, "evidenceId", 200);
+    const observationId = optionalString(record.observationId, "observationId", 200);
     const decisionRequestId = optionalString(record.decisionRequestId, "decisionRequestId", 200);
     return {
       id: requiredString(record.id, "event id", 200),
@@ -498,6 +594,7 @@ function eventFromRecord(record: Record<string, unknown>): OrchestrationEvent | 
       ...(record.fromStatus ? { fromStatus: taskStatusFrom(record.fromStatus) } : {}),
       ...(record.toStatus ? { toStatus: taskStatusFrom(record.toStatus) } : {}),
       ...(evidenceId ? { evidenceId } : {}),
+      ...(observationId ? { observationId } : {}),
       ...(decisionRequestId ? { decisionRequestId } : {}),
     };
   } catch {
@@ -520,9 +617,26 @@ export function listOrchestrationEvents(
   const events = (Array.isArray(raw.nodes) ? raw.nodes : [])
     .flatMap((node) => node.data && typeof node.data === "object" ? [eventFromRecord(node.data as Record<string, unknown>)] : [])
     .filter((event): event is OrchestrationEvent => event !== null);
-  const sorted = events.sort((a, b) => a.sequence - b.sequence || a.id.localeCompare(b.id));
+  const resolvedCursor = cursor && cursor.createdAt === undefined
+    ? (() => {
+      const cursorEvent = events.find((event) => event.id === cursor.id);
+      return cursorEvent ? { ...cursor, createdAt: cursorEvent.createdAt } : cursor;
+    })()
+    : cursor;
+  const sorted = events.sort((a, b) =>
+    a.sequence - b.sequence || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
+  );
   const pagePlusOne = sorted
-    .filter((event) => !cursor || event.sequence > cursor.sequence || (event.sequence === cursor.sequence && event.id > cursor.id))
+    .filter((event) =>
+      !resolvedCursor
+      || event.sequence > resolvedCursor.sequence
+      || (event.sequence === resolvedCursor.sequence && (
+        resolvedCursor.createdAt === undefined
+          ? event.id > resolvedCursor.id
+          : event.createdAt > resolvedCursor.createdAt
+            || (event.createdAt === resolvedCursor.createdAt && event.id > resolvedCursor.id)
+      ))
+    )
     .slice(0, limit + 1);
   const page = pagePlusOne.slice(0, limit);
   const last = page[page.length - 1];

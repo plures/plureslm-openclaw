@@ -42,6 +42,18 @@ entity orchestration_evidence:
     source: string
     created_at: string
 
+entity orchestration_observation:
+  prefix: "orch:observation:"
+  fields:
+    id: string
+    task_id: string
+    kind: enum(finding, tool_result, failure, progress, plan)
+    summary: string
+    source: string
+    details: string
+    actor: string
+    created_at: string
+
 entity orchestration_decision_request:
   prefix: "orch:decision:"
   fields:
@@ -134,6 +146,30 @@ constraint orchestration_evidence_requires_summary:
   severity: error
   message: "Evidence must include a concise summary."
 
+constraint orchestration_observation_requires_known_kind:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_observation_record"
+  require: observation_kind == "finding" OR observation_kind == "tool_result" OR observation_kind == "failure" OR observation_kind == "progress" OR observation_kind == "plan"
+  severity: error
+  message: "An orchestration observation must have a known kind."
+
+constraint orchestration_observation_requires_summary:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_observation_record"
+  require: summary != ""
+  severity: error
+  message: "An orchestration observation must include a concise summary."
+
+constraint orchestration_observation_requires_source:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_observation_record"
+  require: source != ""
+  severity: error
+  message: "An orchestration observation must identify its source."
+
 constraint orchestration_decision_request_requires_question:
   scope: orchestration
   phase: admission
@@ -174,5 +210,7 @@ contract orchestration_task_lifecycle:
   examples:
     - input: "Add test evidence, then complete an in-progress task"
       expect: "evidence_backed_done_task"
+    - input: "Persist an agent finding or tool result for later PX evaluation"
+      expect: "durable_orchestration_observation"
     - input: "An agent needs a product decision while working"
       expect: "waiting_for_user_decision_request"

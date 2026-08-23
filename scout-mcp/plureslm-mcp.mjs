@@ -521,6 +521,33 @@ const tools = [
     },
   },
   {
+    name: "plures_task_observe",
+    description: "Persist a PX-admitted finding, tool result, failure, progress update, or plan as reactive task input. This records input; it does not dispatch an agent.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["taskId", "kind", "summary"],
+      properties: {
+        taskId: { type: "string", minLength: 1 },
+        kind: { type: "string", enum: ["finding", "tool_result", "failure", "progress", "plan"] },
+        summary: { type: "string", minLength: 1 },
+        source: { type: "string" },
+        details: { type: "string" },
+        actor: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "plures_task_observation_get",
+    description: "Read one durable orchestration observation by its ID through the authenticated PluresLM service.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["observationId"],
+      properties: { observationId: { type: "string", minLength: 1 } },
+    },
+  },
+  {
     name: "plures_task_decision_request",
     description: "Create a PX-governed question that parks an in-progress task for a user decision.",
     inputSchema: {
@@ -834,6 +861,24 @@ async function callTool(name, args = {}) {
       details: args.details,
       actor: args.actor,
     });
+    return textResult({ backend: "service", ...result });
+  }
+
+  if (name === "plures_task_observe") {
+    if (!config.serviceUrl) return textResult({ error: "plures_task_observe requires authenticated service mode" }, true);
+    const result = await serviceRequest(`/tasks/${encodeURIComponent(String(args.taskId ?? ""))}/observations`, {
+      kind: args.kind,
+      summary: args.summary,
+      source: args.source,
+      details: args.details,
+      actor: args.actor,
+    });
+    return textResult({ backend: "service", ...result });
+  }
+
+  if (name === "plures_task_observation_get") {
+    if (!config.serviceUrl) return textResult({ error: "plures_task_observation_get requires authenticated service mode" }, true);
+    const result = await serviceRequest(`/observations/${encodeURIComponent(String(args.observationId ?? ""))}`);
     return textResult({ backend: "service", ...result });
   }
 

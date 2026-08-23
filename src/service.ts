@@ -15,8 +15,10 @@ import {
   createDecisionRequest,
   createOrchestrationTask,
   getDecisionRequest,
+  getOrchestrationObservation,
   getOrchestrationTask,
   listOrchestrationEvents,
+  recordOrchestrationObservation,
   resolveDecisionRequest,
   TaskInputError,
   transitionOrchestrationTask,
@@ -230,6 +232,14 @@ export function createPluresLmMemoryService(config: PluresLmServiceConfig) {
       return { ok: true, provider: "plureslm", ...addOrchestrationEvidence(store, id, params) };
     },
 
+    async recordTaskObservation(id: string, params: Record<string, unknown>): Promise<unknown> {
+      return { ok: true, provider: "plureslm", ...recordOrchestrationObservation(store, id, params) };
+    },
+
+    async getTaskObservation(id: string): Promise<unknown> {
+      return { ok: true, provider: "plureslm", observation: getOrchestrationObservation(store, id) };
+    },
+
     async createDecisionRequest(id: string, params: Record<string, unknown>): Promise<unknown> {
       return { ok: true, provider: "plureslm", ...createDecisionRequest(store, id, params) };
     },
@@ -278,6 +288,22 @@ export function createPluresLmHttpHandler(
         const result = await service.getDecisionRequest(id);
         if (!(result as { decision?: unknown }).decision) {
           jsonResponse(res, 404, { ok: false, provider: "plureslm", error: "decision request not found" });
+          return;
+        }
+        jsonResponse(res, 200, result);
+        return;
+      }
+      if (method === "GET" && url.pathname.startsWith("/observations/")) {
+        let id: string;
+        try {
+          id = decodeURIComponent(url.pathname.slice("/observations/".length));
+        } catch {
+          jsonResponse(res, 400, { ok: false, provider: "plureslm", error: "invalid observation id" });
+          return;
+        }
+        const result = await service.getTaskObservation(id);
+        if (!(result as { observation?: unknown }).observation) {
+          jsonResponse(res, 404, { ok: false, provider: "plureslm", error: "observation not found" });
           return;
         }
         jsonResponse(res, 200, result);
@@ -364,6 +390,18 @@ export function createPluresLmHttpHandler(
           return;
         }
         jsonResponse(res, 201, await service.addTaskEvidence(id, body));
+        return;
+      }
+      const observation = /^\/tasks\/([^/]+)\/observations$/.exec(url.pathname);
+      if (observation) {
+        let id: string;
+        try {
+          id = decodeURIComponent(observation[1] ?? "");
+        } catch {
+          jsonResponse(res, 400, { ok: false, provider: "plureslm", error: "invalid task id" });
+          return;
+        }
+        jsonResponse(res, 201, await service.recordTaskObservation(id, body));
         return;
       }
       const decision = /^\/tasks\/([^/]+)\/decision-requests$/.exec(url.pathname);
