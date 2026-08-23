@@ -15,7 +15,19 @@ try {
     $dataRoot = Join-Path $runRoot "data"
     $copilotRoot = Join-Path $runRoot "copilot"
     $pluginRoot = Join-Path $copilotRoot "installed-plugins\\plures-local\\plureslm-scout-hooks"
-    & (Join-Path $packageRoot "Install-PluresLMScout.ps1") -PackageRoot $packageRoot -InstallRoot $installRoot -DataRoot $dataRoot -DbPath (Join-Path $runRoot "memory") -PluginRoot $pluginRoot -CopilotRoot $copilotRoot -ServicePort $port -SkipScheduledTask
+    try {
+        & (Join-Path $packageRoot "Install-PluresLMScout.ps1") -PackageRoot $packageRoot -InstallRoot $installRoot -DataRoot $dataRoot -DbPath (Join-Path $runRoot "memory") -PluginRoot $pluginRoot -CopilotRoot $copilotRoot -ServicePort $port -SkipScheduledTask
+    } catch {
+        $configPath = Join-Path $dataRoot "scout-service.json"
+        if (Test-Path -LiteralPath $configPath) {
+            $failedConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+            if (Test-Path -LiteralPath $failedConfig.stderrLog) {
+                Write-Host "Installed service error log:"
+                Get-Content -LiteralPath $failedConfig.stderrLog
+            }
+        }
+        throw
+    }
 
     $config = Get-Content -LiteralPath (Join-Path $dataRoot "scout-service.json") -Raw | ConvertFrom-Json
     $hookEnv = Get-Content -LiteralPath (Join-Path $pluginRoot "plureslm-hook-env.json") -Raw | ConvertFrom-Json

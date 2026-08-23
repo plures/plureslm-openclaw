@@ -40,6 +40,9 @@ jobs:
         run: |
           npm install
           npm run build
+          $addon = Join-Path $env:GITHUB_WORKSPACE "pluresdb\crates\pluresdb-node\pluresdb-node.win32-x64-msvc.node"
+          if (-not (Test-Path -LiteralPath $addon)) { throw "Built PluresDB addon is missing: $addon" }
+          "PLURESLM_NATIVE_ADDON_PATH=$addon" >> $env:GITHUB_ENV
 
       - name: Install dependencies
         shell: pwsh

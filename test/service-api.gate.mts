@@ -84,7 +84,7 @@ try {
   const createResponse = await fetch(`${url}/tasks`, {
     method: "POST",
     headers: {
-      authorization: `******
+      authorization: "Bearer " + token,
       "content-type": "application/json",
     },
     body: JSON.stringify({
