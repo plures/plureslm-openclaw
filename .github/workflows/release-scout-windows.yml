@@ -33,6 +33,7 @@ jobs:
         with:
           repository: plures/praxis-platform
           path: praxis-platform
+          token: ${{ secrets.PRAXIS_PLATFORM_TOKEN }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
