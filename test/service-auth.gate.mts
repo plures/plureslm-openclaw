@@ -61,6 +61,8 @@ try {
   assert.equal(wrongTask.status, 401, "task reads must reject a wrong token");
   const missingEvents = await request(url, "/tasks/orch%3Atask%3Amissing/events");
   assert.equal(missingEvents.status, 401, "task events must reject a missing token");
+  const missingObservation = await request(url, "/observations/orch%3Aobservation%3Amissing");
+  assert.equal(missingObservation.status, 401, "observation reads must reject a missing token");
   const missingDecision = await request(url, "/decision-requests/orch%3Adecision%3Amissing");
   assert.equal(missingDecision.status, 401, "decision reads must reject a missing token");
 
@@ -70,6 +72,7 @@ try {
   for (const [path, body] of [
     ["/tasks/%E0/transition", { status: "ready" }],
     ["/tasks/%E0/evidence", { kind: "test", summary: "malformed" }],
+    ["/tasks/%E0/observations", { kind: "finding", summary: "malformed" }],
     ["/tasks/%E0/decision-requests", { question: "malformed" }],
     ["/decision-requests/%E0/resolve", { answer: "malformed" }],
   ] as const) {

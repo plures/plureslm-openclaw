@@ -73,6 +73,32 @@ try {
   });
   assert.equal(allowedEvidencedDone.allowed, true, "PX policy must admit evidence-backed completion");
 
+  const allowedObservation = store.pxCheckAction({
+    action_type: "orchestration_observation_record",
+    target: "orch:task:policy-gate",
+    session_type: "main",
+    metadata: {
+      action_type: "orchestration_observation_record",
+      observation_kind: "tool_result",
+      summary: "The focused validation completed.",
+      source: "task-policy.gate",
+    },
+  });
+  assert.equal(allowedObservation.allowed, true, "PX policy must admit a known observation with a source and summary");
+
+  const deniedObservationKind = store.pxCheckAction({
+    action_type: "orchestration_observation_record",
+    target: "orch:task:policy-gate",
+    session_type: "main",
+    metadata: {
+      action_type: "orchestration_observation_record",
+      observation_kind: "unknown",
+      summary: "The focused validation completed.",
+      source: "task-policy.gate",
+    },
+  });
+  assert.equal(deniedObservationKind.allowed, false, "PX policy must reject an unknown observation kind");
+
   const allowedDecisionPause = store.pxCheckAction({
     action_type: "orchestration_decision_request_create",
     target: "orch:task:policy-gate",

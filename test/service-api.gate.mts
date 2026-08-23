@@ -119,7 +119,7 @@ try {
   const taskPath = `/tasks/${encodeURIComponent(String(task.id))}`;
   const badEvidenceActor = await fetch(`${url}${taskPath}/evidence`, {
     method: "POST",
-    headers: { authorization: `****** "content-type": "application/json" },
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ kind: "test_result", summary: "bad actor", actor: 42 }),
   });
   assert.equal(badEvidenceActor.status, 400);
@@ -130,6 +130,34 @@ try {
   assert.equal((ready.task as Record<string, unknown>).status, "ready");
   const inProgress = await requestJson(url, `${taskPath}/transition`, { status: "in_progress", actor: "scout" }, token);
   assert.equal((inProgress.task as Record<string, unknown>).status, "in_progress");
+
+  const badObservation = await fetch(`${url}${taskPath}/observations`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ kind: "unknown", summary: "invalid observation" }),
+  });
+  assert.equal(badObservation.status, 400, "observation kinds must be validated before persistence");
+
+  const observation = await requestJson(url, `${taskPath}/observations`, {
+    kind: "tool_result",
+    summary: "The service observation gate completed.",
+    source: "service-api.gate",
+    details: "A durable tool result can become later reactive PX input.",
+    actor: "scout",
+  }, token);
+  const observedTask = observation.task as Record<string, unknown>;
+  const observed = observation.observation as Record<string, unknown>;
+  assert.match(String(observed.id), /^orch:observation:/);
+  assert.equal(observed.kind, "tool_result");
+  assert.equal(observedTask.status, "in_progress");
+  assert.equal(observedTask.revision, (inProgress.task as Record<string, unknown>).revision);
+  const fetchedObservation = await requestJson(
+    url,
+    `/observations/${encodeURIComponent(String(observed.id))}`,
+    undefined,
+    token,
+  );
+  assert.deepEqual(fetchedObservation.observation, observed);
 
   const prematureDone = await fetch(`${url}${taskPath}/transition`, {
     method: "POST",
@@ -149,7 +177,7 @@ try {
 
   const badDecisionActor = await fetch(`${url}${taskPath}/decision-requests`, {
     method: "POST",
-    headers: { authorization: `****** "content-type": "application/json" },
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ question: "Bad actor?", actor: 42 }),
   });
   assert.equal(badDecisionActor.status, 400);
@@ -167,7 +195,7 @@ try {
 
   const badResolutionActor = await fetch(`${url}/decision-requests/${encodeURIComponent(String(decision.id))}/resolve`, {
     method: "POST",
-    headers: { authorization: `****** "content-type": "application/json" },
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ answer: "safe", actor: 42 }),
   });
   assert.equal(badResolutionActor.status, 400);
@@ -193,6 +221,7 @@ try {
     "task_created",
     "task_transitioned",
     "task_transitioned",
+    "observation_recorded",
     "evidence_added",
     "decision_requested",
     "decision_resolved",

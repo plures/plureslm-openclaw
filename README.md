@@ -4,7 +4,7 @@
 
 A read-and-write memory plugin that recalls from a [PluresDB](https://github.com/plures/pluresdb) store via the native `@plures/pluresdb-native` addon. It registers OpenClaw's exclusive **memory capability** and serves ranked `search` / `readFile` / `status`, ingestion, dreaming persistence, and a service-backed durable task resource.
 
-> **Current scope.** Memory ingestion and durable task records write only through the governed store. The task service now provides PX-admitted lifecycle state, evidence, an auditable event trail, and user-decision pauses. It deliberately does **not** dispatch or lease agents yet: the linked native store lacks a conditional-update primitive required to make those effects safe.
+> **Current scope.** Memory ingestion and durable task records write only through the governed store. The task service provides PX-admitted lifecycle state, evidence, an auditable event trail, user-decision pauses, and durable observations (findings, tool results, failures, progress, and plans) that can feed later reactive procedures. It deliberately does **not** dispatch or lease agents yet: the linked native store lacks a conditional-update primitive required to make those effects safe.
 
 ## What it does
 
@@ -15,7 +15,7 @@ A read-and-write memory plugin that recalls from a [PluresDB](https://github.com
   - `status()` reports backend/model/`totalNodes`/vector availability from `stats()`.
   - `probeEmbeddingAvailability()` / `probeVectorAvailability()` report readiness.
 - `sync()` ingests configured memory and session transcripts, chunks and indexes them, and persists them through the governed write path. Headroom compression and dreaming checkpoints/candidates are also durable store writes.
-- The authenticated shared service exposes durable orchestration records: create/read tasks, PX-governed transitions, evidence, decision requests/resolutions, and task event trails. Scout exposes these in service mode through `plures_task_*` tools.
+- The authenticated shared service exposes durable orchestration records: create/read tasks, PX-governed transitions, evidence, observations, decision requests/resolutions, and task event trails. Scout exposes these in service mode through `plures_task_*` tools.
 - If no `dbPath` is configured, the capability registers **inert** (returns `{ manager: null, error }`) instead of crashing the host.
 
 ## Configuration
@@ -73,7 +73,7 @@ published in the release artifact. Restart Scout after installation.
 
 - **Exclusive lock.** A PluresDB store directory can be opened by only one handle per process. `PluresLmStore` memoizes one handle per `dbPath` (process-local singleton). Do not point two plugins at the same store path in one process.
 - **Service ownership.** With `serviceUrl`, Scout and OpenClaw are authenticated clients and do not open the shared store. The service owns memory writes and all orchestration-record mutations.
-- **Reactive task kernel, not a hidden scheduler.** Tasks move through `queued`, `ready`, `in_progress`, `waiting_for_user`, `blocked`, and terminal states only when the PX admission contract permits it. Completion from `in_progress` requires a durable evidence record; a decision request parks work until a user answer releases it to `ready`.
+- **Reactive task kernel, not a hidden scheduler.** Tasks move through `queued`, `ready`, `in_progress`, `waiting_for_user`, `blocked`, and terminal states only when the PX admission contract permits it. Completion from `in_progress` requires a durable evidence record; a decision request parks work until a user answer releases it to `ready`. `plures_task_observe` stores PX-admitted findings, tool results, failures, progress, and plans without changing task state, so a future procedure can evaluate those durable inputs rather than relying on an agent's ephemeral context.
 - **Still not task execution.** These APIs record and govern the work state, but do not silently invent a worker, agent lease, delegation policy, retry loop, or background dispatcher. Those require PluresDB conditional claims and a service-owned effect adapter.
 
 ## Build & test
