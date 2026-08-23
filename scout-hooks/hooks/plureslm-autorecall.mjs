@@ -25,6 +25,7 @@
  * - PLURESLM_REACTIVE_PX_POLICY: .px policy loaded by PluresLmStore when enabled.
  */
 
+import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -150,13 +151,43 @@ function resolveRepoRoot() {
   return resolve(hookDir, "..", "..");
 }
 
-async function main() {
-  const dbPath = process.env.PLURESLM_DB_PATH;
-  if (!dbPath) {
-    debug("PLURESLM_DB_PATH is not set; skipping.");
-    return;
-  }
+async function serviceToken() {
+  if (process.env.PLURESLM_SCOUT_SERVICE_TOKEN?.trim()) return process.env.PLURESLM_SCOUT_SERVICE_TOKEN.trim();
+  const tokenFile = process.env.PLURESLM_SCOUT_SERVICE_TOKEN_FILE?.trim();
+  if (!tokenFile) return undefined;
+  const token = await readFile(tokenFile, "utf8");
+  return token.trim() || undefined;
+}
 
+async function recallFromService(prompt, limit) {
+  const serviceUrl = process.env.PLURESLM_SCOUT_SERVICE_URL?.trim().replace(/\/+$/, "");
+  if (!serviceUrl) return null;
+  const token = await serviceToken();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch(`${serviceUrl}/search`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ query: prompt, maxResults: limit }),
+      signal: controller.signal,
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(`service HTTP ${response.status}: ${body?.error ?? "request failed"}`);
+    if (!body || !Array.isArray(body.results)) throw new Error("service response did not include results");
+    return {
+      hits: body.results,
+      status: { dbPath: `service:${serviceUrl}` },
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function main() {
   const payload = tryParseJson(await readStdin());
   const prompt = findPrompt(payload);
   if (!shouldRecall(prompt)) {
@@ -164,30 +195,35 @@ async function main() {
     return;
   }
 
-  const repoRoot = resolveRepoRoot();
-  const pluresDbPath = resolve(repoRoot, "dist", "pluresdb.js");
-  const { PluresLmStore } = await import(pathToFileURL(pluresDbPath).href);
-
-  const store = PluresLmStore.open({
-    dbPath,
-    embeddingModel: process.env.PLURESLM_EMBEDDING_MODEL ?? DEFAULT_EMBEDDING_MODEL,
-    vectorThreshold: parseNumber(process.env.PLURESLM_VECTOR_THRESHOLD),
-    maxResults:
-      parseNumber(process.env.PLURESLM_MAX_RESULTS) ?? DEFAULT_MAX_RESULTS,
-    compressAboveTokens: parseNumber(process.env.PLURESLM_COMPRESS_ABOVE_TOKENS),
-    reactivePx: parseBoolean(process.env.PLURESLM_REACTIVE_PX),
-    reactivePxPolicy: process.env.PLURESLM_REACTIVE_PX_POLICY,
-  });
-
-  const open = store.probeOpen();
-  if (!open.ok) {
-    debug(open.error ?? "Store probe failed.");
-    return;
-  }
-
   const limit = parseNumber(process.env.PLURESLM_MAX_RESULTS) ?? DEFAULT_MAX_RESULTS;
-  const hits = store.recall(prompt, limit);
-  const status = store.status();
+  const remote = await recallFromService(prompt, limit);
+  let hits;
+  let status;
+  if (remote) {
+    ({ hits, status } = remote);
+  } else {
+    const dbPath = process.env.PLURESLM_DB_PATH;
+    if (!dbPath) {
+      debug("PLURESLM_SCOUT_SERVICE_URL and PLURESLM_DB_PATH are not set; skipping.");
+      return;
+    }
+    const repoRoot = resolveRepoRoot();
+    const pluresDbPath = resolve(repoRoot, "dist", "pluresdb.js");
+    const { PluresLmStore } = await import(pathToFileURL(pluresDbPath).href);
+    const store = PluresLmStore.open({
+      dbPath,
+      embeddingModel: process.env.PLURESLM_EMBEDDING_MODEL ?? DEFAULT_EMBEDDING_MODEL,
+      vectorThreshold: parseNumber(process.env.PLURESLM_VECTOR_THRESHOLD),
+      maxResults: limit,
+      compressAboveTokens: parseNumber(process.env.PLURESLM_COMPRESS_ABOVE_TOKENS),
+      reactivePx: parseBoolean(process.env.PLURESLM_REACTIVE_PX),
+      reactivePxPolicy: process.env.PLURESLM_REACTIVE_PX_POLICY,
+    });
+    const open = store.probeOpen();
+    if (!open.ok) { debug(open.error ?? "Store probe failed."); return; }
+    hits = store.recall(prompt, limit);
+    status = store.status();
+  }
   process.stdout.write(formatHookOutput(formatRecallContext(prompt, hits, status)));
 }
 

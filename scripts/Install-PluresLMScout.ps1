@@ -1,18 +1,17 @@
 param(
-    [string]$RepoRoot = "",
-    [string]$DbPath = "$env:USERPROFILE\.copilot\plugin-data\plureslm\scout-db",
-    [string]$PluginRoot = "$env:USERPROFILE\.copilot\installed-plugins\plures-local\plureslm-scout-hooks",
-    [switch]$SkipRuntimeCheck
+    [string]$PackageRoot = "",
+    [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "PluresLM\\scout"),
+    [string]$DataRoot = (Join-Path $env:LOCALAPPDATA "PluresLM\\data"),
+    [string]$DbPath = "",
+    [int]$ServicePort = 31997,
+    [string]$PluginRoot = "$env:USERPROFILE\\.copilot\\installed-plugins\\plures-local\\plureslm-scout-hooks",
+    [string]$CopilotRoot = "$env:USERPROFILE\\.copilot",
+    [string]$TaskName = "PluresLM Scout Memory Service",
+    [switch]$SkipServiceStart,
+    [switch]$SkipScheduledTask
 )
 
 $ErrorActionPreference = "Stop"
-
-function Resolve-ReleaseRoot {
-    if ($PSScriptRoot) {
-        return (Resolve-Path -LiteralPath $PSScriptRoot).Path
-    }
-    return (Resolve-Path -LiteralPath ".").Path
-}
 
 function Read-JsonObject {
     param([string]$Path)
@@ -26,119 +25,110 @@ function Read-JsonObject {
     return [pscustomobject]@{}
 }
 
-function Ensure-ObjectProperty {
-    param(
-        [pscustomobject]$Object,
-        [string]$Name,
-        $Value
-    )
-    if (-not $Object.PSObject.Properties[$Name]) {
-        $Object | Add-Member -MemberType NoteProperty -Name $Name -Value $Value
-    }
-}
-
 function Set-ObjectProperty {
-    param(
-        [pscustomobject]$Object,
-        [string]$Name,
-        $Value
-    )
-    if (-not $Object.PSObject.Properties[$Name]) {
-        $Object | Add-Member -MemberType NoteProperty -Name $Name -Value $Value
-    } else {
-        $Object.$Name = $Value
+    param([pscustomobject]$Object, [string]$Name, $Value)
+    if ($Object.PSObject.Properties[$Name]) { $Object.$Name = $Value }
+    else { $Object | Add-Member -MemberType NoteProperty -Name $Name -Value $Value }
+}
+
+function Copy-ReleaseDirectory {
+    param([string]$Name)
+    $source = Join-Path $PackageRoot $Name
+    $target = Join-Path $InstallRoot $Name
+    if (-not (Test-Path -LiteralPath $source)) { throw "Release package is missing $Name." }
+    Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $source -Destination $target -Recurse -Force
+}
+
+function New-ServiceToken {
+    $bytes = [byte[]]::new(32)
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+if ($ServicePort -lt 1 -or $ServicePort -gt 65535) { throw "ServicePort must be an integer 1..65535." }
+if (-not $PackageRoot) { $PackageRoot = $PSScriptRoot }
+$PackageRoot = (Resolve-Path -LiteralPath $PackageRoot).Path
+if (-not $DbPath) { $DbPath = Join-Path $DataRoot "memory" }
+
+foreach ($required in @("dist\\service-cli.js", "node_modules\\@plures\\pluresdb-native", "scout-hooks", "scout-mcp", "scripts\\Start-PluresLMScoutService.ps1", "scripts\\Start-PluresLMScoutMcp.ps1", "scripts\\Stop-PluresLMScoutService.ps1")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $PackageRoot $required))) {
+        throw "Release package is missing $required. Download the complete Windows release zip."
     }
 }
 
-$releaseRoot = Resolve-ReleaseRoot
-$hooksSource = Join-Path $releaseRoot "plureslm-scout-hooks"
-if (-not (Test-Path -LiteralPath $hooksSource)) {
-    $hooksSource = Join-Path $releaseRoot "scout-hooks"
-}
-if (-not (Test-Path -LiteralPath $hooksSource)) {
-    throw "Release package is missing plureslm-scout-hooks/scout-hooks next to this installer."
-}
+New-Item -ItemType Directory -Force -Path $InstallRoot, $DataRoot, $DbPath | Out-Null
+foreach ($directory in @("dist", "node_modules", "scout-hooks", "scout-mcp", "scripts")) { Copy-ReleaseDirectory $directory }
 
-if (-not $RepoRoot) {
-    $RepoRoot = $releaseRoot
+$configPath = Join-Path $DataRoot "scout-service.json"
+$tokenPath = Join-Path $DataRoot "scout-service.token"
+if (-not (Test-Path -LiteralPath $tokenPath)) {
+    [IO.File]::WriteAllText($tokenPath, (New-ServiceToken) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 }
-$RepoRoot = (Resolve-Path -LiteralPath $RepoRoot -ErrorAction SilentlyContinue).Path
-if (-not $RepoRoot) {
-    throw "RepoRoot does not exist. Pass -RepoRoot C:\path\to\plureslm-openclaw."
-}
-
-$runtimePath = Join-Path $RepoRoot "dist\pluresdb.js"
-if (-not $SkipRuntimeCheck -and -not (Test-Path -LiteralPath $runtimePath)) {
-    throw "PluresLM runtime was not found at $runtimePath. Run pnpm build in the repo, or pass -RepoRoot to a built checkout. Use -SkipRuntimeCheck only to install the Scout plugin config ahead of building."
-}
+$serviceUrl = "http://127.0.0.1:$ServicePort"
+[pscustomobject]@{
+    installRoot = $InstallRoot
+    dbPath = $DbPath
+    serviceUrl = $serviceUrl
+    tokenFile = $tokenPath
+    pidFile = (Join-Path $DataRoot "scout-service.pid")
+    stdoutLog = (Join-Path $DataRoot "scout-service.out.log")
+    stderrLog = (Join-Path $DataRoot "scout-service.err.log")
+} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
 
 $targetParent = Split-Path -Parent $PluginRoot
 New-Item -ItemType Directory -Force -Path $targetParent | Out-Null
-if (Test-Path -LiteralPath $PluginRoot) {
-    Remove-Item -Recurse -Force -LiteralPath $PluginRoot
-}
-Copy-Item -Recurse -Force -LiteralPath $hooksSource -Destination $PluginRoot
+Remove-Item -LiteralPath $PluginRoot -Recurse -Force -ErrorAction SilentlyContinue
+Copy-Item -LiteralPath (Join-Path $InstallRoot "scout-hooks") -Destination $PluginRoot -Recurse -Force
+[pscustomobject]@{
+    PLURESLM_SCOUT_SERVICE_URL = $serviceUrl
+    PLURESLM_SCOUT_SERVICE_TOKEN_FILE = $tokenPath
+} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $PluginRoot "plureslm-hook-env.json") -Encoding utf8NoBOM
 
-$hookEnv = [ordered]@{
-    PLURESLM_REPO_ROOT = $RepoRoot
-    PLURESLM_DB_PATH = $DbPath
-}
-$hookEnv | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $PluginRoot "plureslm-hook-env.json") -Encoding UTF8
-
-$copilotDir = Join-Path $env:USERPROFILE ".copilot"
-New-Item -ItemType Directory -Force -Path $copilotDir | Out-Null
-$configPath = Join-Path $copilotDir "config.json"
-$settingsPath = Join-Path $copilotDir "settings.json"
-
-$copilotConfig = Read-JsonObject $configPath
-Ensure-ObjectProperty $copilotConfig "installedPlugins" @()
-
-$pluginKey = "plureslm-scout-hooks"
-$marketplace = "plures-local"
-$existing = @($copilotConfig.installedPlugins) | Where-Object {
-    $_.name -eq $pluginKey -and $_.marketplace -eq $marketplace
-}
-
-if ($existing.Count -eq 0) {
-    $copilotConfig.installedPlugins += [pscustomobject]@{
-        name = $pluginKey
-        marketplace = $marketplace
-        version = "0.1.0"
-        installed_at = (Get-Date).ToUniversalTime().ToString("o")
-        enabled = $true
-        cache_path = $PluginRoot
-    }
-} else {
-    foreach ($entry in $copilotConfig.installedPlugins) {
-        if ($entry.name -eq $pluginKey -and $entry.marketplace -eq $marketplace) {
-            Set-ObjectProperty $entry "version" "0.1.0"
-            Set-ObjectProperty $entry "enabled" $true
-            Set-ObjectProperty $entry "cache_path" $PluginRoot
+$mcpRunner = Join-Path $InstallRoot "scripts\\Start-PluresLMScoutMcp.ps1"
+[pscustomobject]@{
+    mcpServers = [pscustomobject]@{
+        plureslm = [pscustomobject]@{
+            command = "powershell"
+            args = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $mcpRunner, "-ConfigPath", $configPath)
         }
     }
-}
+} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $PluginRoot ".mcp.json") -Encoding utf8NoBOM
 
-$settings = Read-JsonObject $settingsPath
-Ensure-ObjectProperty $settings "enabledPlugins" ([pscustomobject]@{})
-$enabledKey = "$pluginKey@$marketplace"
-Set-ObjectProperty $settings.enabledPlugins $enabledKey $true
-
-Ensure-ObjectProperty $settings "enabledMcpjsonServers" @()
-$enabledMcpServers = @($settings.enabledMcpjsonServers) | Where-Object { $_ -ne "plureslm" }
-if ($enabledMcpServers -notcontains "pluresdb") {
-    $settings.enabledMcpjsonServers = @($enabledMcpServers + "pluresdb")
+New-Item -ItemType Directory -Force -Path $CopilotRoot | Out-Null
+$copilotConfigPath = Join-Path $CopilotRoot "config.json"
+$settingsPath = Join-Path $CopilotRoot "settings.json"
+$copilotConfig = Read-JsonObject $copilotConfigPath
+if (-not $copilotConfig.PSObject.Properties["installedPlugins"]) { Set-ObjectProperty $copilotConfig "installedPlugins" @() }
+$pluginKey = "plureslm-scout-hooks"; $marketplace = "plures-local"
+$existing = @($copilotConfig.installedPlugins) | Where-Object { $_.name -eq $pluginKey -and $_.marketplace -eq $marketplace }
+if ($existing.Count -eq 0) {
+    $copilotConfig.installedPlugins += [pscustomobject]@{ name = $pluginKey; marketplace = $marketplace; version = "release"; installed_at = (Get-Date).ToUniversalTime().ToString("o"); enabled = $true; cache_path = $PluginRoot }
 } else {
-    $settings.enabledMcpjsonServers = @($enabledMcpServers)
+    foreach ($entry in $existing) { Set-ObjectProperty $entry "enabled" $true; Set-ObjectProperty $entry "cache_path" $PluginRoot; Set-ObjectProperty $entry "version" "release" }
+}
+$settings = Read-JsonObject $settingsPath
+if (-not $settings.PSObject.Properties["enabledPlugins"]) { Set-ObjectProperty $settings "enabledPlugins" ([pscustomobject]@{}) }
+Set-ObjectProperty $settings.enabledPlugins "$pluginKey@$marketplace" $true
+if (-not $settings.PSObject.Properties["enabledMcpjsonServers"]) { Set-ObjectProperty $settings "enabledMcpjsonServers" @() }
+$settings.enabledMcpjsonServers = @($settings.enabledMcpjsonServers | Where-Object { $_ -ne "pluresdb" }) + "plureslm"
+Copy-Item -LiteralPath $copilotConfigPath -Destination "$copilotConfigPath.plureslm.bak" -Force -ErrorAction SilentlyContinue
+Copy-Item -LiteralPath $settingsPath -Destination "$settingsPath.plureslm.bak" -Force -ErrorAction SilentlyContinue
+$copilotConfig | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $copilotConfigPath -Encoding utf8NoBOM
+$settings | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $settingsPath -Encoding utf8NoBOM
+
+$startScript = Join-Path $InstallRoot "scripts\\Start-PluresLMScoutService.ps1"
+$stopScript = Join-Path $InstallRoot "scripts\\Stop-PluresLMScoutService.ps1"
+if (-not $SkipScheduledTask) {
+    $taskCommand = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$startScript`" -ConfigPath `"$configPath`""
+    & schtasks.exe /Create /TN $TaskName /TR $taskCommand /SC ONLOGON /F | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not create the per-user startup task '$TaskName'. Re-run with -SkipScheduledTask only if you will start the service yourself." }
+}
+if (-not $SkipServiceStart) {
+    & $stopScript -ConfigPath $configPath
+    & $startScript -ConfigPath $configPath
 }
 
-Copy-Item -LiteralPath $configPath -Destination "$configPath.plureslm.bak" -Force -ErrorAction SilentlyContinue
-Copy-Item -LiteralPath $settingsPath -Destination "$settingsPath.plureslm.bak" -Force -ErrorAction SilentlyContinue
-
-$copilotConfig | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $configPath -Encoding UTF8
-$settings | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $settingsPath -Encoding UTF8
-
-Write-Host "Installed PluresLM Scout hooks to $PluginRoot"
-Write-Host "Configured PLURESLM_REPO_ROOT=$RepoRoot"
-Write-Host "Configured PLURESLM_DB_PATH=$DbPath"
-Write-Host "Enabled MCP server key: pluresdb"
-Write-Host "Restart Scout/Copilot for plugin and MCP discovery."
+Write-Host "Installed PluresLM Scout service to $InstallRoot"
+Write-Host "Scout consumes authenticated memory at $serviceUrl; its token remains in $tokenPath"
+Write-Host "Restart Microsoft Scout/Copilot for plugin and MCP discovery."

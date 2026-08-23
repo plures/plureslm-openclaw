@@ -1,7 +1,6 @@
 param(
     [string]$Version = "",
-    [string]$OutputDir = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "artifacts"),
-    [switch]$IncludeRuntime
+    [string]$OutputDir = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "artifacts")
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,20 +21,27 @@ Remove-Item -Recurse -Force -LiteralPath $stageRoot -ErrorAction SilentlyContinu
 Remove-Item -Force -LiteralPath $zipPath, $shaPath -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
 
-Copy-Item -Recurse -Force -LiteralPath (Join-Path $repoRoot "scout-hooks") -Destination (Join-Path $stageRoot "plureslm-scout-hooks")
+Copy-Item -Recurse -Force -LiteralPath (Join-Path $repoRoot "scout-hooks") -Destination (Join-Path $stageRoot "scout-hooks")
 Copy-Item -Recurse -Force -LiteralPath (Join-Path $repoRoot "scout-mcp") -Destination (Join-Path $stageRoot "scout-mcp")
 Copy-Item -Force -LiteralPath (Join-Path $repoRoot "scripts\Install-PluresLMScout.ps1") -Destination (Join-Path $stageRoot "Install-PluresLMScout.ps1")
+New-Item -ItemType Directory -Force -Path (Join-Path $stageRoot "scripts") | Out-Null
+Copy-Item -Force -LiteralPath (Join-Path $repoRoot "scripts\Start-PluresLMScoutService.ps1") -Destination (Join-Path $stageRoot "scripts\Start-PluresLMScoutService.ps1")
+Copy-Item -Force -LiteralPath (Join-Path $repoRoot "scripts\Stop-PluresLMScoutService.ps1") -Destination (Join-Path $stageRoot "scripts\Stop-PluresLMScoutService.ps1")
+Copy-Item -Force -LiteralPath (Join-Path $repoRoot "scripts\Start-PluresLMScoutMcp.ps1") -Destination (Join-Path $stageRoot "scripts\Start-PluresLMScoutMcp.ps1")
 Copy-Item -Force -LiteralPath (Join-Path $repoRoot "scout-hooks\README.md") -Destination (Join-Path $stageRoot "README-Scout-Windows.md")
 Copy-Item -Force -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $stageRoot "LICENSE")
 
-if ($IncludeRuntime) {
-    $dist = Join-Path $repoRoot "dist"
-    if (-not (Test-Path -LiteralPath (Join-Path $dist "pluresdb.js"))) {
-        throw "-IncludeRuntime requested but dist\pluresdb.js does not exist. Run pnpm build first."
-    }
-    Copy-Item -Recurse -Force -LiteralPath $dist -Destination (Join-Path $stageRoot "dist")
-    Copy-Item -Force -LiteralPath (Join-Path $repoRoot "package.json") -Destination (Join-Path $stageRoot "package.json")
+$dist = Join-Path $repoRoot "dist"
+if (-not (Test-Path -LiteralPath (Join-Path $dist "service-cli.js"))) {
+    throw "dist\service-cli.js does not exist. Run pnpm build before packaging a release."
 }
+$nativeModule = Join-Path $repoRoot "node_modules\@plures\pluresdb-native"
+if (-not (Test-Path -LiteralPath $nativeModule)) {
+    throw "node_modules\@plures\pluresdb-native does not exist. Run pnpm install before packaging a release."
+}
+Copy-Item -Recurse -Force -LiteralPath $dist -Destination (Join-Path $stageRoot "dist")
+New-Item -ItemType Directory -Force -Path (Join-Path $stageRoot "node_modules\@plures") | Out-Null
+Copy-Item -Recurse -Force -LiteralPath $nativeModule -Destination (Join-Path $stageRoot "node_modules\@plures\pluresdb-native")
 
 @"
 pluresLM Scout Windows installer
@@ -43,10 +49,11 @@ Version: $safeVersion
 
 Install from an extracted zip:
 
-  powershell -ExecutionPolicy Bypass -File .\Install-PluresLMScout.ps1 -RepoRoot C:\path\to\built\plureslm-openclaw
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-PluresLMScout.ps1
 
-If this package includes dist\pluresdb.js, -RepoRoot can be omitted and defaults to this extracted directory.
-Restart Microsoft Scout after installation.
+The installer copies its self-contained runtime to LocalAppData, creates a
+per-user authenticated loopback service, registers a startup task, and enables
+the Scout plugin. Restart Microsoft Scout after installation.
 "@ | Set-Content -LiteralPath (Join-Path $stageRoot "INSTALL.txt") -Encoding UTF8
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null

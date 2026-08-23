@@ -18,15 +18,46 @@ jobs:
   package:
     name: Package Windows installer
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: plureslm-openclaw
 
     steps:
-      - name: Checkout
+      - name: Checkout PluresLM
         uses: actions/checkout@v4
+        with:
+          path: plureslm-openclaw
+
+      - name: Checkout PluresDB native dependency
+        uses: actions/checkout@v4
+        with:
+          repository: plures/pluresdb
+          path: pluresdb
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      - name: Build PluresDB native addon
+        shell: pwsh
+        working-directory: pluresdb/crates/pluresdb-node
+        run: |
+          npm install
+          npm run build
+
+      - name: Install release runtime
+        shell: pwsh
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Validate TypeScript and service ownership gates
+        shell: pwsh
+        run: |
+          pnpm run check
+          pnpm run build
+          pnpm run test:service-auth
 
       - name: Resolve version
         id: version
@@ -50,7 +81,7 @@ jobs:
         shell: pwsh
         run: |
           $failed = $false
-          Get-ChildItem -Recurse -File -Include *.ps1 | ForEach-Object {
+          Get-ChildItem -Recurse -File | Where-Object { $_.Extension -eq ".ps1" -and $_.FullName -notlike "*\\node_modules\\*" } | ForEach-Object {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
@@ -73,19 +104,24 @@ jobs:
         run: |
           .\scripts\package-scout-windows.ps1 -Version "${{ steps.version.outputs.version }}" -OutputDir .\artifacts
 
+      - name: Exercise isolated release install
+        shell: pwsh
+        run: |
+          .\scripts\test-scout-windows-release.ps1
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: plureslm-scout-windows-${{ steps.version.outputs.safe_version }}
           path: |
-            artifacts/plureslm-scout-windows-${{ steps.version.outputs.safe_version }}.zip
-            artifacts/plureslm-scout-windows-${{ steps.version.outputs.safe_version }}.zip.sha256
+            plureslm-openclaw/artifacts/plureslm-scout-windows-${{ steps.version.outputs.safe_version }}.zip
+            plureslm-openclaw/artifacts/plureslm-scout-windows-${{ steps.version.outputs.safe_version }}.zip.sha256
 
       - name: Attach installer to GitHub Release
         if: ${{ github.ref_type == 'tag' }}
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/plureslm-scout-windows-${{ steps.version.outputs.safe_version }}.zip
-            artifacts/plureslm-scout-windows-${{ steps.version.outputs.safe_version }}.zip.sha256
+            plureslm-openclaw/artifacts/plureslm-scout-windows-${{ steps.version.outputs.safe_version }}.zip
+            plureslm-openclaw/artifacts/plureslm-scout-windows-${{ steps.version.outputs.safe_version }}.zip.sha256
           generate_release_notes: true
