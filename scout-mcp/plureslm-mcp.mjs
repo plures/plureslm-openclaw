@@ -465,6 +465,87 @@ const tools = [
     },
   },
   {
+    name: "plures_task_get",
+    description: "Read the current durable state of one PluresLM orchestration task through the authenticated service.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["taskId"],
+      properties: { taskId: { type: "string", minLength: 1 } },
+    },
+  },
+  {
+    name: "plures_task_events",
+    description: "Read the auditable event trail for one PluresLM orchestration task through the authenticated service.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["taskId"],
+      properties: { taskId: { type: "string", minLength: 1 } },
+    },
+  },
+  {
+    name: "plures_task_transition",
+    description: "Request a PX-governed lifecycle transition for a durable task. This records state; it does not dispatch an agent.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["taskId", "status"],
+      properties: {
+        taskId: { type: "string", minLength: 1 },
+        status: { type: "string", enum: ["ready", "in_progress", "blocked", "done", "cancelled"] },
+        actor: { type: "string" },
+        details: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "plures_task_evidence",
+    description: "Attach durable evidence to a task. PX requires evidence before an in-progress task may be completed.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["taskId", "kind", "summary"],
+      properties: {
+        taskId: { type: "string", minLength: 1 },
+        kind: { type: "string", minLength: 1 },
+        summary: { type: "string", minLength: 1 },
+        source: { type: "string" },
+        details: { type: "string" },
+        actor: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "plures_task_decision_request",
+    description: "Create a PX-governed question that parks an in-progress task for a user decision.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["taskId", "question"],
+      properties: {
+        taskId: { type: "string", minLength: 1 },
+        question: { type: "string", minLength: 1 },
+        options: { type: "array", items: { type: "string" } },
+        actor: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "plures_task_decision_resolve",
+    description: "Resolve a user decision request and release its task to ready through the authenticated service.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["decisionId", "answer"],
+      properties: {
+        decisionId: { type: "string", minLength: 1 },
+        answer: { type: "string", minLength: 1 },
+        actor: { type: "string" },
+      },
+    },
+  },
+  {
     name: "px_validate",
     description: "Validate Praxis .px source using configured px-napi.",
     inputSchema: {
@@ -723,6 +804,59 @@ async function callTool(name, args = {}) {
       labels: args.labels,
       priority: args.priority,
       parentTaskId: args.parentTaskId,
+    });
+    return textResult({ backend: "service", ...result });
+  }
+
+  if (name === "plures_task_get") {
+    if (!config.serviceUrl) return textResult({ error: "plures_task_get requires authenticated service mode" }, true);
+    const result = await serviceRequest(`/tasks/${encodeURIComponent(String(args.taskId ?? ""))}`);
+    return textResult({ backend: "service", ...result });
+  }
+
+  if (name === "plures_task_events") {
+    if (!config.serviceUrl) return textResult({ error: "plures_task_events requires authenticated service mode" }, true);
+    const result = await serviceRequest(`/tasks/${encodeURIComponent(String(args.taskId ?? ""))}/events`);
+    return textResult({ backend: "service", ...result });
+  }
+
+  if (name === "plures_task_transition") {
+    if (!config.serviceUrl) return textResult({ error: "plures_task_transition requires authenticated service mode" }, true);
+    const result = await serviceRequest(`/tasks/${encodeURIComponent(String(args.taskId ?? ""))}/transition`, {
+      status: args.status,
+      actor: args.actor,
+      details: args.details,
+    });
+    return textResult({ backend: "service", ...result });
+  }
+
+  if (name === "plures_task_evidence") {
+    if (!config.serviceUrl) return textResult({ error: "plures_task_evidence requires authenticated service mode" }, true);
+    const result = await serviceRequest(`/tasks/${encodeURIComponent(String(args.taskId ?? ""))}/evidence`, {
+      kind: args.kind,
+      summary: args.summary,
+      source: args.source,
+      details: args.details,
+      actor: args.actor,
+    });
+    return textResult({ backend: "service", ...result });
+  }
+
+  if (name === "plures_task_decision_request") {
+    if (!config.serviceUrl) return textResult({ error: "plures_task_decision_request requires authenticated service mode" }, true);
+    const result = await serviceRequest(`/tasks/${encodeURIComponent(String(args.taskId ?? ""))}/decision-requests`, {
+      question: args.question,
+      options: args.options,
+      actor: args.actor,
+    });
+    return textResult({ backend: "service", ...result });
+  }
+
+  if (name === "plures_task_decision_resolve") {
+    if (!config.serviceUrl) return textResult({ error: "plures_task_decision_resolve requires authenticated service mode" }, true);
+    const result = await serviceRequest(`/decision-requests/${encodeURIComponent(String(args.decisionId ?? ""))}/resolve`, {
+      answer: args.answer,
+      actor: args.actor,
     });
     return textResult({ backend: "service", ...result });
   }

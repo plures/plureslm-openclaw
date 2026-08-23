@@ -43,6 +43,10 @@ try {
     ["/get", { path: "auth.md" }],
     ["/sync", { reason: "auth-gate" }],
     ["/tasks", { title: "Authentication gate task" }],
+    ["/tasks/orch%3Atask%3Amissing/transition", { status: "ready" }],
+    ["/tasks/orch%3Atask%3Amissing/evidence", { kind: "test", summary: "missing" }],
+    ["/tasks/orch%3Atask%3Amissing/decision-requests", { question: "missing" }],
+    ["/decision-requests/orch%3Adecision%3Amissing/resolve", { answer: "missing" }],
   ] as const) {
     const missing = await request(url, path, undefined, body);
     assert.equal(missing.status, 401, `${path} must reject a missing token`);
@@ -55,6 +59,10 @@ try {
   assert.equal(missingTask.status, 401, "task reads must reject a missing token");
   const wrongTask = await request(url, "/tasks/orch:task:missing", "wrong-token");
   assert.equal(wrongTask.status, 401, "task reads must reject a wrong token");
+  const missingEvents = await request(url, "/tasks/orch%3Atask%3Amissing/events");
+  assert.equal(missingEvents.status, 401, "task events must reject a missing token");
+  const missingDecision = await request(url, "/decision-requests/orch%3Adecision%3Amissing");
+  assert.equal(missingDecision.status, 401, "decision reads must reject a missing token");
 
   const malformedTask = await request(url, "/tasks/%E0", token);
   assert.equal(malformedTask.status, 400, "malformed task IDs must be rejected as client input");

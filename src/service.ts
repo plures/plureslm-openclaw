@@ -11,9 +11,15 @@ import { fileURLToPath } from "node:url";
 
 import { createPluresLmSearchManager } from "./memory-capability.js";
 import {
+  addOrchestrationEvidence,
+  createDecisionRequest,
   createOrchestrationTask,
+  getDecisionRequest,
   getOrchestrationTask,
+  listOrchestrationEvents,
+  resolveDecisionRequest,
   TaskInputError,
+  transitionOrchestrationTask,
 } from "./orchestration-tasks.js";
 import { PluresLmStore } from "./pluresdb.js";
 
@@ -204,6 +210,30 @@ export function createPluresLmMemoryService(config: PluresLmServiceConfig) {
     async getTask(id: string): Promise<unknown> {
       return { ok: true, provider: "plureslm", task: getOrchestrationTask(store, id) };
     },
+
+    async transitionTask(id: string, params: Record<string, unknown>): Promise<unknown> {
+      return { ok: true, provider: "plureslm", task: transitionOrchestrationTask(store, id, params) };
+    },
+
+    async getTaskEvents(id: string): Promise<unknown> {
+      return { ok: true, provider: "plureslm", events: listOrchestrationEvents(store, id) };
+    },
+
+    async addTaskEvidence(id: string, params: Record<string, unknown>): Promise<unknown> {
+      return { ok: true, provider: "plureslm", ...addOrchestrationEvidence(store, id, params) };
+    },
+
+    async createDecisionRequest(id: string, params: Record<string, unknown>): Promise<unknown> {
+      return { ok: true, provider: "plureslm", ...createDecisionRequest(store, id, params) };
+    },
+
+    async getDecisionRequest(id: string): Promise<unknown> {
+      return { ok: true, provider: "plureslm", decision: getDecisionRequest(store, id) };
+    },
+
+    async resolveDecisionRequest(id: string, params: Record<string, unknown>): Promise<unknown> {
+      return { ok: true, provider: "plureslm", ...resolveDecisionRequest(store, id, params) };
+    },
   };
 }
 
@@ -228,6 +258,34 @@ export function createPluresLmHttpHandler(
       }
       if (method === "GET" && url.pathname === "/status") {
         jsonResponse(res, 200, await service.status());
+        return;
+      }
+      if (method === "GET" && url.pathname.startsWith("/decision-requests/")) {
+        let id: string;
+        try {
+          id = decodeURIComponent(url.pathname.slice("/decision-requests/".length));
+        } catch {
+          jsonResponse(res, 400, { ok: false, provider: "plureslm", error: "invalid decision request id" });
+          return;
+        }
+        const result = await service.getDecisionRequest(id);
+        if (!(result as { decision?: unknown }).decision) {
+          jsonResponse(res, 404, { ok: false, provider: "plureslm", error: "decision request not found" });
+          return;
+        }
+        jsonResponse(res, 200, result);
+        return;
+      }
+      const taskEventsGet = /^\/tasks\/([^/]+)\/events$/.exec(url.pathname);
+      if (method === "GET" && taskEventsGet) {
+        let id: string;
+        try {
+          id = decodeURIComponent(taskEventsGet[1] ?? "");
+        } catch {
+          jsonResponse(res, 400, { ok: false, provider: "plureslm", error: "invalid task id" });
+          return;
+        }
+        jsonResponse(res, 200, await service.getTaskEvents(id));
         return;
       }
       if (method === "GET" && url.pathname.startsWith("/tasks/")) {
@@ -272,6 +330,26 @@ export function createPluresLmHttpHandler(
           created,
           typeof id === "string" ? { location: `/tasks/${encodeURIComponent(id)}` } : undefined,
         );
+        return;
+      }
+      const transition = /^\/tasks\/([^/]+)\/transition$/.exec(url.pathname);
+      if (transition) {
+        jsonResponse(res, 200, await service.transitionTask(decodeURIComponent(transition[1] ?? ""), body));
+        return;
+      }
+      const evidence = /^\/tasks\/([^/]+)\/evidence$/.exec(url.pathname);
+      if (evidence) {
+        jsonResponse(res, 201, await service.addTaskEvidence(decodeURIComponent(evidence[1] ?? ""), body));
+        return;
+      }
+      const decision = /^\/tasks\/([^/]+)\/decision-requests$/.exec(url.pathname);
+      if (decision) {
+        jsonResponse(res, 201, await service.createDecisionRequest(decodeURIComponent(decision[1] ?? ""), body));
+        return;
+      }
+      const resolveDecision = /^\/decision-requests\/([^/]+)\/resolve$/.exec(url.pathname);
+      if (resolveDecision) {
+        jsonResponse(res, 200, await service.resolveDecisionRequest(decodeURIComponent(resolveDecision[1] ?? ""), body));
         return;
       }
       jsonResponse(res, 404, { ok: false, provider: "plureslm", error: "not found" });

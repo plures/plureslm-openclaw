@@ -105,6 +105,61 @@ try {
 
   const fetched = await requestJson(url, `/tasks/${encodeURIComponent(String(task.id))}`, undefined, token);
   assert.deepEqual(fetched.task, task);
+
+  const taskPath = `/tasks/${encodeURIComponent(String(task.id))}`;
+  const ready = await requestJson(url, `${taskPath}/transition`, { status: "ready", actor: "scout" }, token);
+  assert.equal((ready.task as Record<string, unknown>).status, "ready");
+  const inProgress = await requestJson(url, `${taskPath}/transition`, { status: "in_progress", actor: "scout" }, token);
+  assert.equal((inProgress.task as Record<string, unknown>).status, "in_progress");
+
+  const prematureDone = await fetch(`${url}${taskPath}/transition`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ status: "done", actor: "scout" }),
+  });
+  assert.equal(prematureDone.status, 400, "PX must refuse completion without evidence");
+
+  const evidence = await requestJson(url, `${taskPath}/evidence`, {
+    kind: "test_result",
+    summary: "Focused service gate passed.",
+    source: "service-api.gate",
+    actor: "scout",
+  }, token);
+  assert.match(String((evidence.evidence as Record<string, unknown>).id), /^orch:evidence:/);
+  assert.equal((evidence.task as Record<string, unknown>).evidenceCount, 1);
+
+  const requested = await requestJson(url, `${taskPath}/decision-requests`, {
+    question: "Which execution path should Scout use?",
+    options: ["safe", "fast"],
+    actor: "scout",
+  }, token);
+  const decision = requested.decision as Record<string, unknown>;
+  assert.match(String(decision.id), /^orch:decision:/);
+  assert.equal((requested.task as Record<string, unknown>).status, "waiting_for_user");
+
+  const resolved = await requestJson(url, `/decision-requests/${encodeURIComponent(String(decision.id))}/resolve`, {
+    answer: "safe",
+    actor: "user",
+  }, token);
+  assert.equal((resolved.decision as Record<string, unknown>).status, "resolved");
+  assert.equal((resolved.task as Record<string, unknown>).status, "ready");
+
+  await requestJson(url, `${taskPath}/transition`, { status: "in_progress", actor: "scout" }, token);
+  const completed = await requestJson(url, `${taskPath}/transition`, { status: "done", actor: "scout" }, token);
+  assert.equal((completed.task as Record<string, unknown>).status, "done");
+
+  const events = await requestJson(url, `${taskPath}/events`, undefined, token);
+  const eventTypes = (events.events as Array<Record<string, unknown>>).map((event) => event.eventType);
+  assert.deepEqual(eventTypes, [
+    "task_created",
+    "task_transitioned",
+    "task_transitioned",
+    "evidence_added",
+    "decision_requested",
+    "decision_resolved",
+    "task_transitioned",
+    "task_transitioned",
+  ]);
 } finally {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   await rm(root, { recursive: true, force: true });
