@@ -11,6 +11,7 @@ It exposes PluresDB memory and Praxis entry points as MCP tools:
 - `plures_recall`
 - `plures_read`
 - `plures_sync`
+- `plures_task_create`
 - `px_validate`
 - `px_compile`
 
@@ -31,7 +32,9 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 ```
 
 The service accepts unauthenticated `GET /health` only. Status, sync, recall,
-and read require `Authorization: Bearer <service-token>`.
+read, and durable task creation require `Authorization: Bearer <service-token>`.
+`plures_task_create` is service-mode-only: it creates one PX-declared queued
+`orch:task:` record and returns its id. It does not dispatch or execute the task.
 
 ## Explicit direct mode
 
@@ -72,6 +75,7 @@ Add a custom MCP server entry equivalent to:
       "plures_recall",
       "plures_read",
       "plures_sync",
+      "plures_task_create",
       "px_validate",
       "px_compile"
     ]

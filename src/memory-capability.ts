@@ -390,8 +390,10 @@ function listTextFiles(dir: string): string[] {
  * A `MemorySearchManager` backed by one PluresDB store. Exposed for the test
  * gate so the exact read path the host calls can be exercised directly.
  */
-export function createPluresLmSearchManager(cfg: PluresLmCapabilityConfig) {
-  const store = PluresLmStore.open(toStoreOptions(cfg));
+export function createPluresLmSearchManager(
+  cfg: PluresLmCapabilityConfig,
+  store = PluresLmStore.open(toStoreOptions(cfg)),
+) {
 
   async function search(
     query: string,

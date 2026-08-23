@@ -1,0 +1,44 @@
+# orchestration-task-lifecycle.px — admission contract for the PluresLM task resource.
+#
+# The HTTP service is the narrow effect boundary. This contract owns the task
+# identity shape and the only state admitted by the creation slice. Dispatch,
+# delegation, and terminal-state transitions remain out of scope until their
+# reactive procedures exist.
+
+entity orchestration_task:
+  prefix: "orch:task:"
+  fields:
+    id: string
+    title: string
+    description: string
+    labels: list[string]
+    priority: int
+    parent_task_id: string
+    status: enum(queued, delegated, in_progress, blocked, done, cancelled)
+    created_at: string
+    updated_at: string
+
+constraint orchestration_task_creation_requires_title:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_task_create"
+  require: title != ""
+  severity: error
+  message: "A durable orchestration task must have a non-empty title."
+
+constraint orchestration_task_creation_starts_queued:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_task_create"
+  require: status == "queued"
+  severity: error
+  message: "Task creation admits only queued tasks; later lifecycle transitions require their own reactive procedure."
+
+contract orchestration_task_creation:
+  given: "An authenticated client submits a task title and optional task metadata"
+  when: "The service admits a new durable orchestration task"
+  then: "Persist one orch:task: node with a stable id and queued status"
+  threshold: 1.0
+  examples:
+    - input: "Create task: verify the Scout installer"
+      expect: "queued_orchestration_task"

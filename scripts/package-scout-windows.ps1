@@ -23,6 +23,7 @@ New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
 
 Copy-Item -Recurse -Force -LiteralPath (Join-Path $repoRoot "scout-hooks") -Destination (Join-Path $stageRoot "scout-hooks")
 Copy-Item -Recurse -Force -LiteralPath (Join-Path $repoRoot "scout-mcp") -Destination (Join-Path $stageRoot "scout-mcp")
+Copy-Item -Recurse -Force -LiteralPath (Join-Path $repoRoot "procedures") -Destination (Join-Path $stageRoot "procedures")
 Copy-Item -Force -LiteralPath (Join-Path $repoRoot "scripts\Install-PluresLMScout.ps1") -Destination (Join-Path $stageRoot "Install-PluresLMScout.ps1")
 New-Item -ItemType Directory -Force -Path (Join-Path $stageRoot "scripts") | Out-Null
 Copy-Item -Force -LiteralPath (Join-Path $repoRoot "scripts\Start-PluresLMScoutService.ps1") -Destination (Join-Path $stageRoot "scripts\Start-PluresLMScoutService.ps1")

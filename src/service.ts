@@ -1,7 +1,21 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { readFileSync } from "node:fs";
+import {
+  createServer,
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+  type Server,
+  type ServerResponse,
+} from "node:http";
+import { fileURLToPath } from "node:url";
 
 import { createPluresLmSearchManager } from "./memory-capability.js";
+import {
+  createOrchestrationTask,
+  getOrchestrationTask,
+  TaskInputError,
+} from "./orchestration-tasks.js";
+import { PluresLmStore } from "./pluresdb.js";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -25,11 +39,17 @@ export type PluresLmHttpServiceOptions = {
   allowUnauthenticated?: boolean;
 };
 
-function jsonResponse(res: ServerResponse, statusCode: number, value: unknown): void {
+function jsonResponse(
+  res: ServerResponse,
+  statusCode: number,
+  value: unknown,
+  headers: OutgoingHttpHeaders = {},
+): void {
   const body = JSON.stringify(value, null, 2);
   res.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
+    ...headers,
   });
   res.end(body);
 }
@@ -103,10 +123,25 @@ function sourceMatchesCorpus(source: "memory" | "sessions" | undefined, corpus: 
 }
 
 export function createPluresLmMemoryService(config: PluresLmServiceConfig) {
-  const shared = createPluresLmSearchManager({
+  const storeOptions = {
     ...config,
     embeddingModel: config.embeddingModel ?? "BAAI/bge-small-en-v1.5",
-  });
+  };
+  const store = PluresLmStore.open(storeOptions);
+  const shared = createPluresLmSearchManager(storeOptions, store);
+  const taskPolicyPath = fileURLToPath(
+    new URL("../procedures/orchestration-task-lifecycle.px", import.meta.url),
+  );
+  let taskPolicy: string;
+  try {
+    taskPolicy = readFileSync(taskPolicyPath, "utf8");
+  } catch (error) {
+    throw new Error(
+      `Unable to load orchestration task lifecycle policy at ${taskPolicyPath}. Ensure the package includes procedures/orchestration-task-lifecycle.px.`,
+      { cause: error },
+    );
+  }
+  store.pxLoadPolicy(taskPolicy);
 
   return {
     async health(): Promise<{ ok: true; provider: "plureslm" }> {
@@ -161,6 +196,14 @@ export function createPluresLmMemoryService(config: PluresLmServiceConfig) {
       await shared.manager.sync({ reason, force, sessionFiles });
       return { ok: true, provider: "plureslm", synced: true };
     },
+
+    async createTask(params: Record<string, unknown>): Promise<unknown> {
+      return { ok: true, provider: "plureslm", task: createOrchestrationTask(store, params) };
+    },
+
+    async getTask(id: string): Promise<unknown> {
+      return { ok: true, provider: "plureslm", task: getOrchestrationTask(store, id) };
+    },
   };
 }
 
@@ -180,15 +223,31 @@ export function createPluresLmHttpHandler(
         return;
       }
       if (token && !hasValidBearerToken(req, token)) {
-        jsonResponse(res, 401, { ok: false, error: "unauthorized" });
+        jsonResponse(res, 401, { ok: false, provider: "plureslm", error: "unauthorized" });
         return;
       }
       if (method === "GET" && url.pathname === "/status") {
         jsonResponse(res, 200, await service.status());
         return;
       }
+      if (method === "GET" && url.pathname.startsWith("/tasks/")) {
+        let id: string;
+        try {
+          id = decodeURIComponent(url.pathname.slice("/tasks/".length));
+        } catch {
+          jsonResponse(res, 400, { ok: false, provider: "plureslm", error: "invalid task id" });
+          return;
+        }
+        const result = await service.getTask(id);
+        if (!(result as { task?: unknown }).task) {
+          jsonResponse(res, 404, { ok: false, provider: "plureslm", error: "task not found" });
+          return;
+        }
+        jsonResponse(res, 200, result);
+        return;
+      }
       if (method !== "POST") {
-        jsonResponse(res, 405, { ok: false, error: "method not allowed" });
+        jsonResponse(res, 405, { ok: false, provider: "plureslm", error: "method not allowed" });
         return;
       }
       const body = await readJsonBody(req);
@@ -204,9 +263,24 @@ export function createPluresLmHttpHandler(
         jsonResponse(res, 200, await service.sync(body));
         return;
       }
-      jsonResponse(res, 404, { ok: false, error: "not found" });
+      if (url.pathname === "/tasks") {
+        const created = await service.createTask(body);
+        const id = (created as { task?: { id?: unknown } }).task?.id;
+        jsonResponse(
+          res,
+          201,
+          created,
+          typeof id === "string" ? { location: `/tasks/${encodeURIComponent(id)}` } : undefined,
+        );
+        return;
+      }
+      jsonResponse(res, 404, { ok: false, provider: "plureslm", error: "not found" });
     } catch (error) {
-      jsonResponse(res, 500, { ok: false, error: errorMessage(error) });
+      jsonResponse(res, error instanceof TaskInputError ? 400 : 500, {
+        ok: false,
+        provider: "plureslm",
+        error: errorMessage(error),
+      });
     }
   };
 }

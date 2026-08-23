@@ -14,10 +14,9 @@ async function requestJson(
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["content-type"] = "application/json";
   if (serviceToken) headers.authorization = `Bearer ${serviceToken}`;
-  const response = await fetch(`${url}${path}`, body === undefined ? undefined : {
-    method: "POST",
+  const response = await fetch(`${url}${path}`, {
+    ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
     headers,
-    body: JSON.stringify(body),
   });
   const text = await response.text();
   let json: unknown;
@@ -81,6 +80,31 @@ try {
   const get = await requestJson(url, "/get", { path: first.path, from: 1, lines: 5 }, token);
   assert.equal(get.provider, "plureslm");
   assert.match(JSON.stringify(get), /ZEPHYR_SERVICE_BOUNDARY/);
+
+  const createResponse = await fetch(`${url}/tasks`, {
+    method: "POST",
+    headers: {
+      authorization: `******
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      title: "Verify the service task resource",
+      description: "Created by the authenticated service gate.",
+      labels: ["release", "service"],
+      priority: 50,
+    }),
+  });
+  assert.equal(createResponse.status, 201);
+  const created = JSON.parse(await createResponse.text()) as Record<string, unknown>;
+  assert.equal(created.ok, true);
+  const task = created.task as Record<string, unknown>;
+  assert.match(String(task.id), /^orch:task:/);
+  assert.equal(task.status, "queued");
+  assert.deepEqual(task.labels, ["release", "service"]);
+  assert.equal(createResponse.headers.get("location"), `/tasks/${encodeURIComponent(String(task.id))}`);
+
+  const fetched = await requestJson(url, `/tasks/${encodeURIComponent(String(task.id))}`, undefined, token);
+  assert.deepEqual(fetched.task, task);
 } finally {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   await rm(root, { recursive: true, force: true });

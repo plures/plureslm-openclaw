@@ -449,6 +449,22 @@ const tools = [
     },
   },
   {
+    name: "plures_task_create",
+    description: "Create a durable queued orchestration task through the authenticated PluresLM service.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["title"],
+      properties: {
+        title: { type: "string", minLength: 1 },
+        description: { type: "string" },
+        labels: { type: "array", items: { type: "string" } },
+        priority: { type: "integer", minimum: 0, maximum: 100 },
+        parentTaskId: { type: "string" },
+      },
+    },
+  },
+  {
     name: "px_validate",
     description: "Validate Praxis .px source using configured px-napi.",
     inputSchema: {
@@ -695,6 +711,20 @@ async function callTool(name, args = {}) {
     if (totals.written > 0) store.linkRecent(syncEpoch);
     totals.consolidation = store.consolidate({ force: args.force === true });
     return textResult(totals);
+  }
+
+  if (name === "plures_task_create") {
+    if (!config.serviceUrl) {
+      return textResult({ error: "plures_task_create requires authenticated service mode" }, true);
+    }
+    const result = await serviceRequest("/tasks", {
+      title: args.title,
+      description: args.description,
+      labels: args.labels,
+      priority: args.priority,
+      parentTaskId: args.parentTaskId,
+    });
+    return textResult({ backend: "service", ...result });
   }
 
   if (name === "px_validate" || name === "px_compile") {

@@ -1,7 +1,7 @@
 {
   "name": "@plures/plureslm-openclaw",
   "version": "0.2.1",
-  "description": "PluresLM memory capability for OpenClaw — read-path recall backed by @plures/pluresdb-native (Stage A skeleton).",
+  "description": "PluresLM memory and durable-task capability for OpenClaw, backed by @plures/pluresdb-native.",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "author": "Plures",
@@ -19,6 +19,7 @@
     "dist",
     "scout-hooks",
     "scout-mcp",
+    "procedures",
     "openclaw.plugin.json",
     "README.md",
     "LICENSE"
@@ -51,7 +52,7 @@
     "test:vitest": "vitest run",
     "gate": "tsc -p tsconfig.json && tsx test/recall.gate.mts && tsx test/p3p4.gate.mts",
     "test:service": "tsx test/service-api.gate.mts",
-    "test:service-auth": "tsx test/service-auth.gate.mts && tsx test/service-api.gate.mts && tsx test/service-client.gate.mts && tsx test/service-plugin-registration.gate.mts && tsx test/scout-mcp-service-mode.gate.mts && tsx test/scout-hook-service-mode.gate.mts",
+    "test:service-auth": "tsx test/task-policy.gate.mts && tsx test/service-auth.gate.mts && tsx test/service-api.gate.mts && tsx test/service-client.gate.mts && tsx test/service-plugin-registration.gate.mts && tsx test/scout-mcp-service-mode.gate.mts && tsx test/scout-hook-service-mode.gate.mts",
     "test:scout-service": "tsx test/scout-mcp-service-mode.gate.mts",
     "test:source-dir-recall": "tsx test/source-dir-recall.gate.mts",
     "test:exact-id-lookup": "tsx test/exact-id-lookup.gate.mts"

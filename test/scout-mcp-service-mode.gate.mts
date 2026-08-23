@@ -132,6 +132,20 @@ try {
   }));
   assert.equal(read.backend, "service");
   assert.match(JSON.stringify(read), /SCOUT_SERVICE_MODE_MEMORY/);
+
+  const created = toolPayload(await mcp.request("tools/call", {
+    name: "plures_task_create",
+    arguments: {
+      title: "Verify Scout task creation",
+      labels: ["scout", "service-mode"],
+      priority: 25,
+    },
+  }));
+  assert.equal(created.backend, "service");
+  const task = created.task as Record<string, unknown>;
+  assert.match(String(task.id), /^orch:task:/);
+  assert.equal(task.status, "queued");
+  assert.deepEqual(task.labels, ["scout", "service-mode"]);
 } finally {
   await mcp.close();
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
