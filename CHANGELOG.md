@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.2.1] — 2026-08-22
+
+- Ship the authenticated PluresLM Scout memory service, self-contained Windows installer, and release artifact gate.
+
 ## [0.2.0] — 2026-07-29
 
 - chore(ci): install standard release workflow (autonomous release-health remediation) (f6e754c)
