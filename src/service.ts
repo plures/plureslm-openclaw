@@ -334,22 +334,50 @@ export function createPluresLmHttpHandler(
       }
       const transition = /^\/tasks\/([^/]+)\/transition$/.exec(url.pathname);
       if (transition) {
-        jsonResponse(res, 200, await service.transitionTask(decodeURIComponent(transition[1] ?? ""), body));
+        let id: string;
+        try {
+          id = decodeURIComponent(transition[1] ?? "");
+        } catch {
+          jsonResponse(res, 400, { ok: false, provider: "plureslm", error: "invalid task id" });
+          return;
+        }
+        jsonResponse(res, 200, await service.transitionTask(id, body));
         return;
       }
       const evidence = /^\/tasks\/([^/]+)\/evidence$/.exec(url.pathname);
       if (evidence) {
-        jsonResponse(res, 201, await service.addTaskEvidence(decodeURIComponent(evidence[1] ?? ""), body));
+        let id: string;
+        try {
+          id = decodeURIComponent(evidence[1] ?? "");
+        } catch {
+          jsonResponse(res, 400, { ok: false, provider: "plureslm", error: "invalid task id" });
+          return;
+        }
+        jsonResponse(res, 201, await service.addTaskEvidence(id, body));
         return;
       }
       const decision = /^\/tasks\/([^/]+)\/decision-requests$/.exec(url.pathname);
       if (decision) {
-        jsonResponse(res, 201, await service.createDecisionRequest(decodeURIComponent(decision[1] ?? ""), body));
+        let id: string;
+        try {
+          id = decodeURIComponent(decision[1] ?? "");
+        } catch {
+          jsonResponse(res, 400, { ok: false, provider: "plureslm", error: "invalid task id" });
+          return;
+        }
+        jsonResponse(res, 201, await service.createDecisionRequest(id, body));
         return;
       }
       const resolveDecision = /^\/decision-requests\/([^/]+)\/resolve$/.exec(url.pathname);
       if (resolveDecision) {
-        jsonResponse(res, 200, await service.resolveDecisionRequest(decodeURIComponent(resolveDecision[1] ?? ""), body));
+        let id: string;
+        try {
+          id = decodeURIComponent(resolveDecision[1] ?? "");
+        } catch {
+          jsonResponse(res, 400, { ok: false, provider: "plureslm", error: "invalid decision request id" });
+          return;
+        }
+        jsonResponse(res, 200, await service.resolveDecisionRequest(id, body));
         return;
       }
       jsonResponse(res, 404, { ok: false, provider: "plureslm", error: "not found" });

@@ -67,6 +67,16 @@ try {
   const malformedTask = await request(url, "/tasks/%E0", token);
   assert.equal(malformedTask.status, 400, "malformed task IDs must be rejected as client input");
   assert.equal(malformedTask.body.provider, "plureslm");
+  for (const [path, body] of [
+    ["/tasks/%E0/transition", { status: "ready" }],
+    ["/tasks/%E0/evidence", { kind: "test", summary: "malformed" }],
+    ["/tasks/%E0/decision-requests", { question: "malformed" }],
+    ["/decision-requests/%E0/resolve", { answer: "malformed" }],
+  ] as const) {
+    const malformedMutation = await request(url, path, token, body);
+    assert.equal(malformedMutation.status, 400, `${path} must reject malformed IDs as client input`);
+    assert.equal(malformedMutation.body.provider, "plureslm");
+  }
 
   const sync = await request(url, "/sync", token, { reason: "auth-gate", force: true });
   assert.equal(sync.status, 200);
