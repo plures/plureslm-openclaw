@@ -119,7 +119,7 @@ try {
   const taskPath = `/tasks/${encodeURIComponent(String(task.id))}`;
   const badEvidenceActor = await fetch(`${url}${taskPath}/evidence`, {
     method: "POST",
-    headers: { authorization: `****** "content-type": "application/json" },
+    headers: { authorization: "Bearer " + token, "content-type": "application/json" },
     body: JSON.stringify({ kind: "test_result", summary: "bad actor", actor: 42 }),
   });
   assert.equal(badEvidenceActor.status, 400);
@@ -149,7 +149,7 @@ try {
 
   const badDecisionActor = await fetch(`${url}${taskPath}/decision-requests`, {
     method: "POST",
-    headers: { authorization: `****** "content-type": "application/json" },
+    headers: { authorization: "Bearer " + token, "content-type": "application/json" },
     body: JSON.stringify({ question: "Bad actor?", actor: 42 }),
   });
   assert.equal(badDecisionActor.status, 400);
@@ -167,7 +167,7 @@ try {
 
   const badResolutionActor = await fetch(`${url}/decision-requests/${encodeURIComponent(String(decision.id))}/resolve`, {
     method: "POST",
-    headers: { authorization: `****** "content-type": "application/json" },
+    headers: { authorization: "Bearer " + token, "content-type": "application/json" },
     body: JSON.stringify({ answer: "safe", actor: 42 }),
   });
   assert.equal(badResolutionActor.status, 400);
