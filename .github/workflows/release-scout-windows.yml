@@ -39,6 +39,13 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Build PluresDB native addon
+        shell: pwsh
+        working-directory: pluresdb/crates/pluresdb-node
+        run: |
+          npm install
+          npm run build
+
       - name: Install release runtime
         shell: pwsh
         run: |
