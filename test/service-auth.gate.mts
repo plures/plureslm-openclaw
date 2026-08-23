@@ -56,6 +56,10 @@ try {
   const wrongTask = await request(url, "/tasks/orch:task:missing", "wrong-token");
   assert.equal(wrongTask.status, 401, "task reads must reject a wrong token");
 
+  const malformedTask = await request(url, "/tasks/%E0", token);
+  assert.equal(malformedTask.status, 400, "malformed task IDs must be rejected as client input");
+  assert.equal(malformedTask.body.provider, "plureslm");
+
   const sync = await request(url, "/sync", token, { reason: "auth-gate", force: true });
   assert.equal(sync.status, 200);
   const search = await request(url, "/search", token, {

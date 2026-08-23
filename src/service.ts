@@ -1,6 +1,12 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { fileURLToPath } from "node:url";
 
 import { createPluresLmSearchManager } from "./memory-capability.js";
@@ -33,11 +39,17 @@ export type PluresLmHttpServiceOptions = {
   allowUnauthenticated?: boolean;
 };
 
-function jsonResponse(res: ServerResponse, statusCode: number, value: unknown): void {
+function jsonResponse(
+  res: ServerResponse,
+  statusCode: number,
+  value: unknown,
+  headers: OutgoingHttpHeaders = {},
+): void {
   const body = JSON.stringify(value, null, 2);
   res.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
+    ...headers,
   });
   res.end(body);
 }
@@ -111,20 +123,25 @@ function sourceMatchesCorpus(source: "memory" | "sessions" | undefined, corpus: 
 }
 
 export function createPluresLmMemoryService(config: PluresLmServiceConfig) {
-  const shared = createPluresLmSearchManager({
+  const storeOptions = {
     ...config,
     embeddingModel: config.embeddingModel ?? "BAAI/bge-small-en-v1.5",
-  });
-  // PluresLmStore memoizes the native handle by dbPath, so task creation uses
-  // the same process-local service owner as recall and sync.
-  const store = PluresLmStore.open({
-    ...config,
-    embeddingModel: config.embeddingModel ?? "BAAI/bge-small-en-v1.5",
-  });
+  };
+  const store = PluresLmStore.open(storeOptions);
+  const shared = createPluresLmSearchManager(storeOptions, store);
   const taskPolicyPath = fileURLToPath(
     new URL("../procedures/orchestration-task-lifecycle.px", import.meta.url),
   );
-  store.pxLoadPolicy(readFileSync(taskPolicyPath, "utf8"));
+  let taskPolicy: string;
+  try {
+    taskPolicy = readFileSync(taskPolicyPath, "utf8");
+  } catch (error) {
+    throw new Error(
+      `Unable to load orchestration task lifecycle policy at ${taskPolicyPath}. Ensure the package includes procedures/orchestration-task-lifecycle.px.`,
+      { cause: error },
+    );
+  }
+  store.pxLoadPolicy(taskPolicy);
 
   return {
     async health(): Promise<{ ok: true; provider: "plureslm" }> {
@@ -206,7 +223,7 @@ export function createPluresLmHttpHandler(
         return;
       }
       if (token && !hasValidBearerToken(req, token)) {
-        jsonResponse(res, 401, { ok: false, error: "unauthorized" });
+        jsonResponse(res, 401, { ok: false, provider: "plureslm", error: "unauthorized" });
         return;
       }
       if (method === "GET" && url.pathname === "/status") {
@@ -214,17 +231,23 @@ export function createPluresLmHttpHandler(
         return;
       }
       if (method === "GET" && url.pathname.startsWith("/tasks/")) {
-        const id = decodeURIComponent(url.pathname.slice("/tasks/".length));
+        let id: string;
+        try {
+          id = decodeURIComponent(url.pathname.slice("/tasks/".length));
+        } catch {
+          jsonResponse(res, 400, { ok: false, provider: "plureslm", error: "invalid task id" });
+          return;
+        }
         const result = await service.getTask(id);
         if (!(result as { task?: unknown }).task) {
-          jsonResponse(res, 404, { ok: false, error: "task not found" });
+          jsonResponse(res, 404, { ok: false, provider: "plureslm", error: "task not found" });
           return;
         }
         jsonResponse(res, 200, result);
         return;
       }
       if (method !== "POST") {
-        jsonResponse(res, 405, { ok: false, error: "method not allowed" });
+        jsonResponse(res, 405, { ok: false, provider: "plureslm", error: "method not allowed" });
         return;
       }
       const body = await readJsonBody(req);
@@ -241,12 +264,23 @@ export function createPluresLmHttpHandler(
         return;
       }
       if (url.pathname === "/tasks") {
-        jsonResponse(res, 201, await service.createTask(body));
+        const created = await service.createTask(body);
+        const id = (created as { task?: { id?: unknown } }).task?.id;
+        jsonResponse(
+          res,
+          201,
+          created,
+          typeof id === "string" ? { location: `/tasks/${encodeURIComponent(id)}` } : undefined,
+        );
         return;
       }
-      jsonResponse(res, 404, { ok: false, error: "not found" });
+      jsonResponse(res, 404, { ok: false, provider: "plureslm", error: "not found" });
     } catch (error) {
-      jsonResponse(res, error instanceof TaskInputError ? 400 : 500, { ok: false, error: errorMessage(error) });
+      jsonResponse(res, error instanceof TaskInputError ? 400 : 500, {
+        ok: false,
+        provider: "plureslm",
+        error: errorMessage(error),
+      });
     }
   };
 }
