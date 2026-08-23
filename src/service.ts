@@ -1,7 +1,15 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { fileURLToPath } from "node:url";
 
 import { createPluresLmSearchManager } from "./memory-capability.js";
+import {
+  createOrchestrationTask,
+  getOrchestrationTask,
+  TaskInputError,
+} from "./orchestration-tasks.js";
+import { PluresLmStore } from "./pluresdb.js";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -107,6 +115,16 @@ export function createPluresLmMemoryService(config: PluresLmServiceConfig) {
     ...config,
     embeddingModel: config.embeddingModel ?? "BAAI/bge-small-en-v1.5",
   });
+  // PluresLmStore memoizes the native handle by dbPath, so task creation uses
+  // the same process-local service owner as recall and sync.
+  const store = PluresLmStore.open({
+    ...config,
+    embeddingModel: config.embeddingModel ?? "BAAI/bge-small-en-v1.5",
+  });
+  const taskPolicyPath = fileURLToPath(
+    new URL("../procedures/orchestration-task-lifecycle.px", import.meta.url),
+  );
+  store.pxLoadPolicy(readFileSync(taskPolicyPath, "utf8"));
 
   return {
     async health(): Promise<{ ok: true; provider: "plureslm" }> {
@@ -161,6 +179,14 @@ export function createPluresLmMemoryService(config: PluresLmServiceConfig) {
       await shared.manager.sync({ reason, force, sessionFiles });
       return { ok: true, provider: "plureslm", synced: true };
     },
+
+    async createTask(params: Record<string, unknown>): Promise<unknown> {
+      return { ok: true, provider: "plureslm", task: createOrchestrationTask(store, params) };
+    },
+
+    async getTask(id: string): Promise<unknown> {
+      return { ok: true, provider: "plureslm", task: getOrchestrationTask(store, id) };
+    },
   };
 }
 
@@ -187,6 +213,16 @@ export function createPluresLmHttpHandler(
         jsonResponse(res, 200, await service.status());
         return;
       }
+      if (method === "GET" && url.pathname.startsWith("/tasks/")) {
+        const id = decodeURIComponent(url.pathname.slice("/tasks/".length));
+        const result = await service.getTask(id);
+        if (!(result as { task?: unknown }).task) {
+          jsonResponse(res, 404, { ok: false, error: "task not found" });
+          return;
+        }
+        jsonResponse(res, 200, result);
+        return;
+      }
       if (method !== "POST") {
         jsonResponse(res, 405, { ok: false, error: "method not allowed" });
         return;
@@ -204,9 +240,13 @@ export function createPluresLmHttpHandler(
         jsonResponse(res, 200, await service.sync(body));
         return;
       }
+      if (url.pathname === "/tasks") {
+        jsonResponse(res, 201, await service.createTask(body));
+        return;
+      }
       jsonResponse(res, 404, { ok: false, error: "not found" });
     } catch (error) {
-      jsonResponse(res, 500, { ok: false, error: errorMessage(error) });
+      jsonResponse(res, error instanceof TaskInputError ? 400 : 500, { ok: false, error: errorMessage(error) });
     }
   };
 }

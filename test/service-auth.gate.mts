@@ -42,6 +42,7 @@ try {
     ["/search", { query: "AUTHENTICATED_SERVICE_MEMORY" }],
     ["/get", { path: "auth.md" }],
     ["/sync", { reason: "auth-gate" }],
+    ["/tasks", { title: "Authentication gate task" }],
   ] as const) {
     const missing = await request(url, path, undefined, body);
     assert.equal(missing.status, 401, `${path} must reject a missing token`);
@@ -49,6 +50,11 @@ try {
     const wrong = await request(url, path, "wrong-token", body);
     assert.equal(wrong.status, 401, `${path} must reject a wrong token`);
   }
+
+  const missingTask = await request(url, "/tasks/orch:task:missing");
+  assert.equal(missingTask.status, 401, "task reads must reject a missing token");
+  const wrongTask = await request(url, "/tasks/orch:task:missing", "wrong-token");
+  assert.equal(wrongTask.status, 401, "task reads must reject a wrong token");
 
   const sync = await request(url, "/sync", token, { reason: "auth-gate", force: true });
   assert.equal(sync.status, 200);

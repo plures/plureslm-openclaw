@@ -51,14 +51,14 @@ if (-not $PackageRoot) { $PackageRoot = $PSScriptRoot }
 $PackageRoot = (Resolve-Path -LiteralPath $PackageRoot).Path
 if (-not $DbPath) { $DbPath = Join-Path $DataRoot "memory" }
 
-foreach ($required in @("dist\\service-cli.js", "node_modules\\@plures\\pluresdb-native", "scout-hooks", "scout-mcp", "scripts\\Start-PluresLMScoutService.ps1", "scripts\\Start-PluresLMScoutMcp.ps1", "scripts\\Stop-PluresLMScoutService.ps1")) {
+foreach ($required in @("dist\\service-cli.js", "node_modules\\@plures\\pluresdb-native", "procedures\\orchestration-task-lifecycle.px", "scout-hooks", "scout-mcp", "scripts\\Start-PluresLMScoutService.ps1", "scripts\\Start-PluresLMScoutMcp.ps1", "scripts\\Stop-PluresLMScoutService.ps1")) {
     if (-not (Test-Path -LiteralPath (Join-Path $PackageRoot $required))) {
         throw "Release package is missing $required. Download the complete Windows release zip."
     }
 }
 
 New-Item -ItemType Directory -Force -Path $InstallRoot, $DataRoot, $DbPath | Out-Null
-foreach ($directory in @("dist", "node_modules", "scout-hooks", "scout-mcp", "scripts")) { Copy-ReleaseDirectory $directory }
+foreach ($directory in @("dist", "node_modules", "procedures", "scout-hooks", "scout-mcp", "scripts")) { Copy-ReleaseDirectory $directory }
 
 $configPath = Join-Path $DataRoot "scout-service.json"
 $tokenPath = Join-Path $DataRoot "scout-service.token"

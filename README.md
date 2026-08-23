@@ -1,10 +1,10 @@
 # plureslm-openclaw
 
-**PluresLM memory capability for [OpenClaw](https://github.com/openclaw/openclaw).**
+**PluresLM memory and durable-task capability for [OpenClaw](https://github.com/openclaw/openclaw).**
 
-A read-path memory plugin that recalls from a [PluresDB](https://github.com/plures/pluresdb) store via the native `@plures/pluresdb-native` addon. It registers OpenClaw's exclusive **memory capability** and serves `search` / `readFile` / `status` from PluresDB's vector and text search.
+A read-and-write memory plugin that recalls from a [PluresDB](https://github.com/plures/pluresdb) store via the native `@plures/pluresdb-native` addon. It registers OpenClaw's exclusive **memory capability** and serves ranked `search` / `readFile` / `status`, ingestion, dreaming persistence, and a service-backed durable task resource.
 
-> **Stage A scope.** This is the compiling skeleton: **read path only**. There is no write path, no flush plan, no prompt-section takeover, and no daemon. It opens an existing PluresDB store and answers recall queries. Ingestion/write lands in a later stage.
+> **Current scope.** Memory ingestion writes only through the governed store, and the task service admits new tasks in the PX-declared `queued` state. Task dispatch, delegation, and state transitions are deliberately not claimed by this slice; they need their own reactive orchestration procedure.
 
 ## What it does
 
@@ -14,6 +14,8 @@ A read-path memory plugin that recalls from a [PluresDB](https://github.com/plur
   - `readFile({ relPath })` resolves a node id back to its stored content.
   - `status()` reports backend/model/`totalNodes`/vector availability from `stats()`.
   - `probeEmbeddingAvailability()` / `probeVectorAvailability()` report readiness.
+- `sync()` ingests configured memory and session transcripts, chunks and indexes them, and persists them through the governed write path. Headroom compression and dreaming checkpoints/candidates are also durable store writes.
+- The authenticated shared service exposes `POST /tasks` to create a durable `orch:task:` record and `GET /tasks/{id}` to read it exactly. Scout exposes this through `plures_task_create` in service mode.
 - If no `dbPath` is configured, the capability registers **inert** (returns `{ manager: null, error }`) instead of crashing the host.
 
 ## Configuration
@@ -36,11 +38,16 @@ OpenClaw host
   └─ api.registerMemoryCapability({ runtime })        ← src/index.ts
        └─ MemoryPluginRuntime.getMemorySearchManager  ← src/memory-capability.ts
             └─ MemorySearchManager.search/readFile/status
-                 └─ PluresLmStore.recall/status        ← src/pluresdb.ts (read-only)
+                 └─ PluresLmStore.recall/sync/put       ← src/pluresdb.ts
                       └─ @plures/pluresdb-native (PluresDatabase)
 ```
 
-The TypeScript layer is a thin, read-only IO boundary. All storage/search logic lives in the native PluresDB addon — this package never reimplements it and never mutates the store.
+The TypeScript layer is a thin IO boundary. It owns host/service adaptation and
+uses the native PluresDB store for governed writes, recall, vector indexing, and
+graph operations; it does not duplicate storage or search policy. The task
+creation contract and its initial `queued` lifecycle state are declared in
+[`procedures/orchestration-task-lifecycle.px`](./procedures/orchestration-task-lifecycle.px),
+which the service loads into the native PX engine before admitting task writes.
 
 When `serviceUrl` is configured, the plugin is an authenticated client and does
 not open the store. The local service requires a bearer token by default for
@@ -65,7 +72,8 @@ published in the release artifact. Restart Scout after installation.
 ### Operational notes
 
 - **Exclusive lock.** A PluresDB store directory can be opened by only one handle per process. `PluresLmStore` memoizes one handle per `dbPath` (process-local singleton). Do not point two plugins at the same store path in one process.
-- **Read-only.** No `put` / `delete` / `exec` calls exist in this package.
+- **Service ownership.** With `serviceUrl`, Scout and OpenClaw are authenticated clients and do not open the shared store. The service owns both memory writes and task creation.
+- **Task creation is not task execution.** `POST /tasks` creates an auditable queued task. It does not silently invent a scheduler, worker, delegation policy, or state-transition API.
 
 ## Build & test
 
