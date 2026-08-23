@@ -2,16 +2,16 @@
 
 This directory is a Scout/Copilot hook plugin for PluresLM autoRecall.
 
-It uses the native `UserPromptSubmit` hook seam: before a submitted prompt reaches the model, `hooks/plureslm-autorecall.mjs` recalls relevant PluresLM memories and writes a bounded `<plureslm_autorecall>` context block to stdout. Scout/Copilot adds that stdout to the current turn's model context. The release installer configures it as an authenticated client of the one local PluresLM service owner.
+It uses the native `UserPromptSubmit` hook seam: before a submitted prompt reaches the model, `hooks/plureslm-autorecall.mjs` recalls relevant PluresLM memories and writes a bounded `<plureslm_autorecall>` context block to stdout. Scout/Copilot adds that stdout to the current turn's model context. The release installer configures it as an authenticated client of the one local PluresLM service owner.
 
-## Recommended release install
-
-Use the signed/checksummed Windows release zip and run its
-`Install-PluresLMScout.ps1`. It installs the service runtime, creates a local
-token file, configures the hook with the service URL and token-file path, and
-enables the plugin. The hook does not receive `PLURESLM_DB_PATH` in this mode.
-
-## Explicit direct-mode development
+## Recommended release install
+
+Use the checksummed Windows release zip and run its
+`Install-PluresLMScout.ps1`. It installs the service runtime, creates a local
+token file, configures the hook with the service URL and token-file path, and
+enables the plugin. The hook does not receive `PLURESLM_DB_PATH` in this mode.
+
+## Explicit direct-mode development
 
 Build the main package first so `dist/pluresdb.js` exists:
 
@@ -20,8 +20,8 @@ pnpm install
 pnpm build
 ```
 
-Direct mode is only for a single-consumer development store. The hook requires
-a PluresDB store path:
+Direct mode is only for a single-consumer development store. The hook requires
+a PluresDB store path:
 
 ```powershell
 $env:PLURESLM_DB_PATH = "C:\absolute\path\to\pluresdb-store"
@@ -62,10 +62,10 @@ The plugin also bundles `.mcp.json` so Scout can discover the PluresLM MCP serve
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PLURESLM_SCOUT_SERVICE_URL` | _(preferred)_ | Authenticated shared PluresLM service URL. |
-| `PLURESLM_SCOUT_SERVICE_TOKEN_FILE` | _(preferred)_ | Local file containing the service bearer token. |
-| `PLURESLM_SCOUT_SERVICE_TOKEN` | _(none)_ | Direct bearer-token override, for development only. |
-| `PLURESLM_DB_PATH` | direct mode only | Absolute path to a single-consumer PluresDB store. |
+| `PLURESLM_SCOUT_SERVICE_URL` | _(preferred)_ | Authenticated shared PluresLM service URL. |
+| `PLURESLM_SCOUT_SERVICE_TOKEN_FILE` | _(preferred)_ | Local file containing the service bearer token. |
+| `PLURESLM_SCOUT_SERVICE_TOKEN` | _(none)_ | Direct bearer-token override, for development only. |
+| `PLURESLM_DB_PATH` | direct mode only | Absolute path to a single-consumer PluresDB store. |
 | `PLURESLM_REPO_ROOT` | inferred | Repository root containing `dist/pluresdb.js`. |
 | `PLURESLM_NODE_PATH` | `node` lookup | Absolute path to `node.exe` when Node is not on PATH. |
 | `PLURESLM_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model for recall. |
@@ -78,4 +78,4 @@ The plugin also bundles `.mcp.json` so Scout can discover the PluresLM MCP serve
 
 ## Praxis/.px boundary
 
-The hook does not ask Scout to enforce Praxis constraints in prompt text. In service mode it does not open the store at all; the authenticated PluresLM service owns storage, search, and native/PX behavior. The injected recall block is explicitly framed as private data, not instructions.
+The hook does not ask Scout to enforce Praxis constraints in prompt text. In service mode it does not open the store at all; the authenticated PluresLM service owns storage, search, and native/PX behavior. The injected recall block is explicitly framed as private data, not instructions.
