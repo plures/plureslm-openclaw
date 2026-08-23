@@ -617,18 +617,24 @@ export function listOrchestrationEvents(
   const events = (Array.isArray(raw.nodes) ? raw.nodes : [])
     .flatMap((node) => node.data && typeof node.data === "object" ? [eventFromRecord(node.data as Record<string, unknown>)] : [])
     .filter((event): event is OrchestrationEvent => event !== null);
+  const resolvedCursor = cursor && cursor.createdAt === undefined
+    ? (() => {
+      const cursorEvent = events.find((event) => event.id === cursor.id);
+      return cursorEvent ? { ...cursor, createdAt: cursorEvent.createdAt } : cursor;
+    })()
+    : cursor;
   const sorted = events.sort((a, b) =>
     a.sequence - b.sequence || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
   );
   const pagePlusOne = sorted
     .filter((event) =>
-      !cursor
-      || event.sequence > cursor.sequence
-      || (event.sequence === cursor.sequence && (
-        cursor.createdAt === undefined
-          ? event.id > cursor.id
-          : event.createdAt > cursor.createdAt
-            || (event.createdAt === cursor.createdAt && event.id > cursor.id)
+      !resolvedCursor
+      || event.sequence > resolvedCursor.sequence
+      || (event.sequence === resolvedCursor.sequence && (
+        resolvedCursor.createdAt === undefined
+          ? event.id > resolvedCursor.id
+          : event.createdAt > resolvedCursor.createdAt
+            || (event.createdAt === resolvedCursor.createdAt && event.id > resolvedCursor.id)
       ))
     )
     .slice(0, limit + 1);

@@ -45,6 +45,7 @@ try {
     ["/tasks", { title: "Authentication gate task" }],
     ["/tasks/orch%3Atask%3Amissing/transition", { status: "ready" }],
     ["/tasks/orch%3Atask%3Amissing/evidence", { kind: "test", summary: "missing" }],
+    ["/tasks/orch%3Atask%3Amissing/observations", { kind: "finding", summary: "missing" }],
     ["/tasks/orch%3Atask%3Amissing/decision-requests", { question: "missing" }],
     ["/decision-requests/orch%3Adecision%3Amissing/resolve", { answer: "missing" }],
   ] as const) {
