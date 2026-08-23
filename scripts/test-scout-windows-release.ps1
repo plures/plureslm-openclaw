@@ -1,6 +1,6 @@
 param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
-    [string]$OutputRoot = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "artifacts\\release-gate")
+    [string]$OutputRoot = (Join-Path ([IO.Path]::GetTempPath()) "plureslm-release-gate")
 )
 
 $ErrorActionPreference = "Stop"
