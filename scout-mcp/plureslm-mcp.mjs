@@ -481,7 +481,11 @@ const tools = [
       type: "object",
       additionalProperties: false,
       required: ["taskId"],
-      properties: { taskId: { type: "string", minLength: 1 } },
+      properties: {
+        taskId: { type: "string", minLength: 1 },
+        limit: { type: "integer", minimum: 1, maximum: 100 },
+        cursor: { type: "string" },
+      },
     },
   },
   {
@@ -527,20 +531,6 @@ const tools = [
         taskId: { type: "string", minLength: 1 },
         question: { type: "string", minLength: 1 },
         options: { type: "array", items: { type: "string" } },
-        actor: { type: "string" },
-      },
-    },
-  },
-  {
-    name: "plures_task_decision_resolve",
-    description: "Resolve a user decision request and release its task to ready through the authenticated service.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      required: ["decisionId", "answer"],
-      properties: {
-        decisionId: { type: "string", minLength: 1 },
-        answer: { type: "string", minLength: 1 },
         actor: { type: "string" },
       },
     },
@@ -816,7 +806,12 @@ async function callTool(name, args = {}) {
 
   if (name === "plures_task_events") {
     if (!config.serviceUrl) return textResult({ error: "plures_task_events requires authenticated service mode" }, true);
-    const result = await serviceRequest(`/tasks/${encodeURIComponent(String(args.taskId ?? ""))}/events`);
+    const query = new URLSearchParams();
+    const limit = numberValue(args.limit);
+    if (limit !== undefined) query.set("limit", String(limit));
+    if (args.cursor !== undefined) query.set("cursor", String(args.cursor));
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const result = await serviceRequest(`/tasks/${encodeURIComponent(String(args.taskId ?? ""))}/events${suffix}`);
     return textResult({ backend: "service", ...result });
   }
 
@@ -847,15 +842,6 @@ async function callTool(name, args = {}) {
     const result = await serviceRequest(`/tasks/${encodeURIComponent(String(args.taskId ?? ""))}/decision-requests`, {
       question: args.question,
       options: args.options,
-      actor: args.actor,
-    });
-    return textResult({ backend: "service", ...result });
-  }
-
-  if (name === "plures_task_decision_resolve") {
-    if (!config.serviceUrl) return textResult({ error: "plures_task_decision_resolve requires authenticated service mode" }, true);
-    const result = await serviceRequest(`/decision-requests/${encodeURIComponent(String(args.decisionId ?? ""))}/resolve`, {
-      answer: args.answer,
       actor: args.actor,
     });
     return textResult({ backend: "service", ...result });

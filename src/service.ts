@@ -84,6 +84,13 @@ function optionalPositiveInt(value: unknown): number | undefined {
   return Math.max(1, Math.floor(value));
 }
 
+function optionalPositiveIntQuery(value: string | null): number | undefined {
+  if (value === null || value === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) throw new TaskInputError("limit must be a positive integer");
+  return parsed;
+}
+
 function optionalBool(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
@@ -215,8 +222,8 @@ export function createPluresLmMemoryService(config: PluresLmServiceConfig) {
       return { ok: true, provider: "plureslm", task: transitionOrchestrationTask(store, id, params) };
     },
 
-    async getTaskEvents(id: string): Promise<unknown> {
-      return { ok: true, provider: "plureslm", events: listOrchestrationEvents(store, id) };
+    async getTaskEvents(id: string, params: { limit?: number; cursor?: string } = {}): Promise<unknown> {
+      return { ok: true, provider: "plureslm", ...listOrchestrationEvents(store, id, params) };
     },
 
     async addTaskEvidence(id: string, params: Record<string, unknown>): Promise<unknown> {
@@ -285,7 +292,10 @@ export function createPluresLmHttpHandler(
           jsonResponse(res, 400, { ok: false, provider: "plureslm", error: "invalid task id" });
           return;
         }
-        jsonResponse(res, 200, await service.getTaskEvents(id));
+        jsonResponse(res, 200, await service.getTaskEvents(id, {
+          limit: optionalPositiveIntQuery(url.searchParams.get("limit")),
+          cursor: url.searchParams.get("cursor") ?? undefined,
+        }));
         return;
       }
       if (method === "GET" && url.pathname.startsWith("/tasks/")) {

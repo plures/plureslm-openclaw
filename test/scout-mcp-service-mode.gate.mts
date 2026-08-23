@@ -109,6 +109,11 @@ const mcp = new ScoutMcpClient(join(repoRoot, "scout-mcp", "plureslm-mcp.mjs"), 
 
 try {
   await mcp.request("initialize", { protocolVersion: "2024-11-05" });
+  const toolList = await mcp.request("tools/list") as { tools?: Array<{ name?: string }> };
+  assert.ok(
+    !toolList.tools?.some((tool) => tool.name === "plures_task_decision_resolve"),
+    "Scout MCP must not expose user decision resolution as an agent-callable tool",
+  );
   const sync = toolPayload(await mcp.request("tools/call", {
     name: "plures_sync",
     arguments: { force: true },
@@ -186,17 +191,19 @@ try {
   const decision = requested.decision as Record<string, unknown>;
   assert.equal((requested.task as Record<string, unknown>).status, "waiting_for_user");
 
-  const resolved = toolPayload(await mcp.request("tools/call", {
+  const blockedResolution = toolPayload(await mcp.request("tools/call", {
     name: "plures_task_decision_resolve",
     arguments: { decisionId: decision.id, answer: "yes", actor: "user" },
   }));
-  assert.equal((resolved.task as Record<string, unknown>).status, "ready");
+  assert.match(String(blockedResolution.error), /Unknown tool/);
 
   const events = toolPayload(await mcp.request("tools/call", {
     name: "plures_task_events",
-    arguments: { taskId: task.id },
+    arguments: { taskId: task.id, limit: 2 },
   }));
-  assert.equal((events.events as Array<unknown>).length, 6);
+  assert.equal((events.events as Array<unknown>).length, 2);
+  assert.equal(events.limit, 2);
+  assert.equal(typeof events.nextCursor, "string");
 } finally {
   await mcp.close();
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

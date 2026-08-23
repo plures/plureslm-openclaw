@@ -12,6 +12,8 @@ const MAX_LABELS = 20;
 const MAX_SUMMARY_LENGTH = 4_000;
 const MAX_DETAIL_LENGTH = 20_000;
 const MAX_OPTIONS = 12;
+const DEFAULT_EVENT_PAGE_LIMIT = 50;
+const MAX_EVENT_PAGE_LIMIT = 100;
 
 export type OrchestrationTaskStatus =
   | "queued"
@@ -53,6 +55,12 @@ export type OrchestrationEvent = {
   toStatus?: OrchestrationTaskStatus;
   evidenceId?: string;
   decisionRequestId?: string;
+};
+
+export type OrchestrationEventPage = {
+  events: OrchestrationEvent[];
+  limit: number;
+  nextCursor?: string;
 };
 
 export type OrchestrationEvidence = {
@@ -100,6 +108,31 @@ function optionalString(value: unknown, field: string, maxLength: number): strin
 
 function optionalActor(value: unknown): string {
   return optionalString(value, "actor", 200) ?? "scout";
+}
+
+function pageLimit(value: unknown): number {
+  if (value === undefined) return DEFAULT_EVENT_PAGE_LIMIT;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new TaskInputError("limit must be a positive integer");
+  }
+  return Math.min(value, MAX_EVENT_PAGE_LIMIT);
+}
+
+function eventCursor(value: unknown): { sequence: number; id: string } | undefined {
+  if (value === undefined) return undefined;
+  const cursor = requiredString(value, "cursor", 250);
+  const match = /^(\d+):(orch:event:.+)$/.exec(cursor);
+  if (!match) throw new TaskInputError("cursor must be an event cursor");
+  const rawSequence = match[1];
+  const id = match[2];
+  if (rawSequence === undefined || id === undefined) throw new TaskInputError("cursor must be an event cursor");
+  const sequence = Number(rawSequence);
+  if (!Number.isSafeInteger(sequence)) throw new TaskInputError("cursor sequence is invalid");
+  return { sequence, id };
+}
+
+function cursorForEvent(event: OrchestrationEvent): string {
+  return `${event.sequence}:${event.id}`;
 }
 
 function labelsFrom(value: unknown): string[] {
@@ -234,6 +267,7 @@ export function createOrchestrationTask(store: PluresLmStore, params: Record<str
   const description = optionalString(params.description, "description", MAX_DESCRIPTION_LENGTH);
   const parentTaskId = optionalString(params.parentTaskId, "parentTaskId", 200);
   const priority = priorityFrom(params.priority);
+  const actor = optionalActor(params.actor);
   if (parentTaskId && !parentTaskId.startsWith(TASK_ID_PREFIX)) {
     throw new TaskInputError(`parentTaskId must begin with ${TASK_ID_PREFIX}`);
   }
@@ -256,7 +290,7 @@ export function createOrchestrationTask(store: PluresLmStore, params: Record<str
     updatedAt: now,
   };
   persist(store, task.id, task, "orchestration task");
-  recordEvent(store, { taskId: task.id, eventType: "task_created", actor: optionalActor(params.actor), sequence: task.revision });
+  recordEvent(store, { taskId: task.id, eventType: "task_created", actor, sequence: task.revision });
   return task;
 }
 
@@ -303,6 +337,7 @@ export function addOrchestrationEvidence(
   const summary = requiredString(params.summary, "summary", MAX_SUMMARY_LENGTH);
   const source = optionalString(params.source, "source", 500) ?? "scout";
   const details = optionalString(params.details, "details", MAX_DETAIL_LENGTH);
+  const actor = optionalActor(params.actor);
   requireAdmission(store, "orchestration_evidence_add", task.id, { kind, summary, task_status: task.status });
   const evidence: OrchestrationEvidence = {
     id: `${EVIDENCE_ID_PREFIX}${randomUUID()}`,
@@ -321,7 +356,7 @@ export function addOrchestrationEvidence(
   recordEvent(store, {
     taskId: updated.id,
     eventType: "evidence_added",
-    actor: optionalActor(params.actor),
+    actor,
     sequence: updated.revision,
     evidenceId: evidence.id,
     details: summary,
@@ -337,6 +372,7 @@ export function createDecisionRequest(
   const task = requireTask(store, id);
   const question = requiredString(params.question, "question", MAX_SUMMARY_LENGTH);
   const options = optionsFrom(params.options);
+  const actor = optionalActor(params.actor);
   requireAdmission(store, "orchestration_decision_request_create", task.id, {
     question,
     from_status: task.status,
@@ -358,7 +394,7 @@ export function createDecisionRequest(
   recordEvent(store, {
     taskId: updated.id,
     eventType: "decision_requested",
-    actor: optionalActor(params.actor),
+    actor,
     sequence: updated.revision,
     fromStatus: task.status,
     toStatus: updated.status,
@@ -410,6 +446,7 @@ export function resolveDecisionRequest(
   const task = requireTask(store, decision.taskId);
   if (task.decisionRequestId !== decision.id) throw new TaskInputError("decision request is not active for this task");
   const answer = requiredString(params.answer, "answer", MAX_SUMMARY_LENGTH);
+  const actor = optionalActor(params.actor);
   if (decision.options.length > 0 && !decision.options.includes(answer)) {
     throw new TaskInputError("answer must be one of the decision request options");
   }
@@ -430,7 +467,7 @@ export function resolveDecisionRequest(
   recordEvent(store, {
     taskId: updated.id,
     eventType: "decision_resolved",
-    actor: optionalActor(params.actor),
+    actor,
     sequence: updated.revision,
     fromStatus: task.status,
     toStatus: updated.status,
@@ -468,8 +505,14 @@ function eventFromRecord(record: Record<string, unknown>): OrchestrationEvent | 
   }
 }
 
-export function listOrchestrationEvents(store: PluresLmStore, taskId: string): OrchestrationEvent[] {
+export function listOrchestrationEvents(
+  store: PluresLmStore,
+  taskId: string,
+  params: { limit?: number; cursor?: string } = {},
+): OrchestrationEventPage {
   requireTask(store, taskId);
+  const limit = pageLimit(params.limit);
+  const cursor = eventCursor(params.cursor);
   const raw = store.execIr([{
     op: "filter",
     predicate: { field: "taskId", cmp: "==", value: taskId },
@@ -477,5 +520,15 @@ export function listOrchestrationEvents(store: PluresLmStore, taskId: string): O
   const events = (Array.isArray(raw.nodes) ? raw.nodes : [])
     .flatMap((node) => node.data && typeof node.data === "object" ? [eventFromRecord(node.data as Record<string, unknown>)] : [])
     .filter((event): event is OrchestrationEvent => event !== null);
-  return events.sort((a, b) => a.sequence - b.sequence || a.createdAt.localeCompare(b.createdAt));
+  const sorted = events.sort((a, b) => a.sequence - b.sequence || a.id.localeCompare(b.id));
+  const pagePlusOne = sorted
+    .filter((event) => !cursor || event.sequence > cursor.sequence || (event.sequence === cursor.sequence && event.id > cursor.id))
+    .slice(0, limit + 1);
+  const page = pagePlusOne.slice(0, limit);
+  const last = page[page.length - 1];
+  return {
+    events: page,
+    limit,
+    ...(pagePlusOne.length > limit && last ? { nextCursor: cursorForEvent(last) } : {}),
+  };
 }
