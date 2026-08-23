@@ -1,9 +1,10 @@
-# orchestration-task-lifecycle.px — admission contract for the PluresLM task resource.
+# orchestration-task-lifecycle.px — governed, auditable task-state contract.
 #
-# The HTTP service is the narrow effect boundary. This contract owns the task
-# identity shape and the only state admitted by the creation slice. Dispatch,
-# delegation, and terminal-state transitions remain out of scope until their
-# reactive procedures exist.
+# The PluresLM service is the single live-store owner and narrow effect boundary.
+# This PX policy owns which task states, evidence, and human-decision transitions
+# are admissible. It does not dispatch an agent or claim a task: the current native
+# binding has no conditional-update primitive, so leases stay unavailable until the
+# store can guarantee them.
 
 entity orchestration_task:
   prefix: "orch:task:"
@@ -14,9 +15,44 @@ entity orchestration_task:
     labels: list[string]
     priority: int
     parent_task_id: string
-    status: enum(queued, delegated, in_progress, blocked, done, cancelled)
+    status: enum(queued, ready, in_progress, waiting_for_user, blocked, done, cancelled)
+    evidence_count: int
+    decision_request_id: string
+    revision: int
     created_at: string
     updated_at: string
+
+entity orchestration_event:
+  prefix: "orch:event:"
+  fields:
+    id: string
+    task_id: string
+    event_type: string
+    actor: string
+    sequence: int
+    created_at: string
+
+entity orchestration_evidence:
+  prefix: "orch:evidence:"
+  fields:
+    id: string
+    task_id: string
+    kind: string
+    summary: string
+    source: string
+    created_at: string
+
+entity orchestration_decision_request:
+  prefix: "orch:decision:"
+  fields:
+    id: string
+    task_id: string
+    question: string
+    options: list[string]
+    status: enum(open, resolved, cancelled)
+    answer: string
+    created_at: string
+    resolved_at: string
 
 constraint orchestration_task_creation_requires_title:
   scope: orchestration
@@ -32,13 +68,111 @@ constraint orchestration_task_creation_starts_queued:
   when: action_type == "orchestration_task_create"
   require: status == "queued"
   severity: error
-  message: "Task creation admits only queued tasks; later lifecycle transitions require their own reactive procedure."
+  message: "Task creation admits only queued tasks."
 
-contract orchestration_task_creation:
-  given: "An authenticated client submits a task title and optional task metadata"
-  when: "The service admits a new durable orchestration task"
-  then: "Persist one orch:task: node with a stable id and queued status"
+constraint orchestration_task_transition_has_known_source:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_task_transition"
+  require: from_status == "queued" OR from_status == "ready" OR from_status == "in_progress" OR from_status == "blocked"
+  severity: error
+  message: "Only runnable task states may use the direct transition action."
+
+constraint orchestration_task_transition_cannot_reopen_terminal:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_task_transition"
+  require: from_status != "done" AND from_status != "cancelled"
+  severity: error
+  message: "Terminal tasks cannot be reopened by the direct transition action."
+
+constraint orchestration_task_transition_from_queued:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_task_transition" AND from_status == "queued"
+  require: to_status == "ready" OR to_status == "cancelled"
+  severity: error
+  message: "A queued task may become ready or be cancelled."
+
+constraint orchestration_task_transition_from_ready:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_task_transition" AND from_status == "ready"
+  require: to_status == "in_progress" OR to_status == "blocked" OR to_status == "cancelled"
+  severity: error
+  message: "A ready task may start, block, or be cancelled."
+
+constraint orchestration_task_transition_from_in_progress:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_task_transition" AND from_status == "in_progress"
+  require: to_status == "ready" OR to_status == "blocked" OR to_status == "done"
+  severity: error
+  message: "An in-progress task may return to ready, block, or complete."
+
+constraint orchestration_task_completion_requires_evidence:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_task_transition" AND to_status == "done"
+  require: evidence_count > 0
+  severity: error
+  message: "A task needs durable evidence before it can be marked done."
+
+constraint orchestration_task_transition_from_blocked:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_task_transition" AND from_status == "blocked"
+  require: to_status == "ready" OR to_status == "cancelled"
+  severity: error
+  message: "A blocked task may return to ready or be cancelled."
+
+constraint orchestration_evidence_requires_summary:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_evidence_add"
+  require: summary != ""
+  severity: error
+  message: "Evidence must include a concise summary."
+
+constraint orchestration_decision_request_requires_question:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_decision_request_create"
+  require: question != ""
+  severity: error
+  message: "A decision request must ask a non-empty question."
+
+constraint orchestration_decision_request_parks_task:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_decision_request_create"
+  require: from_status == "in_progress" AND to_status == "waiting_for_user"
+  severity: error
+  message: "A decision request may only park an in-progress task for the user."
+
+constraint orchestration_decision_resolution_requires_answer:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_decision_request_resolve"
+  require: answer != ""
+  severity: error
+  message: "Resolving a decision request requires an answer."
+
+constraint orchestration_decision_resolution_releases_task:
+  scope: orchestration
+  phase: admission
+  when: action_type == "orchestration_decision_request_resolve"
+  require: from_status == "waiting_for_user" AND to_status == "ready"
+  severity: error
+  message: "A resolved decision releases its task back to ready."
+
+contract orchestration_task_lifecycle:
+  given: "An authenticated client records task progress, evidence, or a user decision request"
+  when: "The service evaluates the proposed transition through the native PX action engine"
+  then: "Persist an auditable orchestration record only when the PX lifecycle admits it"
   threshold: 1.0
   examples:
-    - input: "Create task: verify the Scout installer"
-      expect: "queued_orchestration_task"
+    - input: "Add test evidence, then complete an in-progress task"
+      expect: "evidence_backed_done_task"
+    - input: "An agent needs a product decision while working"
+      expect: "waiting_for_user_decision_request"

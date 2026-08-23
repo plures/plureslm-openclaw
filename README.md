@@ -4,7 +4,7 @@
 
 A read-and-write memory plugin that recalls from a [PluresDB](https://github.com/plures/pluresdb) store via the native `@plures/pluresdb-native` addon. It registers OpenClaw's exclusive **memory capability** and serves ranked `search` / `readFile` / `status`, ingestion, dreaming persistence, and a service-backed durable task resource.
 
-> **Current scope.** Memory ingestion writes only through the governed store, and the task service admits new tasks in the PX-declared `queued` state. Task dispatch, delegation, and state transitions are deliberately not claimed by this slice; they need their own reactive orchestration procedure.
+> **Current scope.** Memory ingestion and durable task records write only through the governed store. The task service now provides PX-admitted lifecycle state, evidence, an auditable event trail, and user-decision pauses. It deliberately does **not** dispatch or lease agents yet: the linked native store lacks a conditional-update primitive required to make those effects safe.
 
 ## What it does
 
@@ -15,7 +15,7 @@ A read-and-write memory plugin that recalls from a [PluresDB](https://github.com
   - `status()` reports backend/model/`totalNodes`/vector availability from `stats()`.
   - `probeEmbeddingAvailability()` / `probeVectorAvailability()` report readiness.
 - `sync()` ingests configured memory and session transcripts, chunks and indexes them, and persists them through the governed write path. Headroom compression and dreaming checkpoints/candidates are also durable store writes.
-- The authenticated shared service exposes `POST /tasks` to create a durable `orch:task:` record and `GET /tasks/{id}` to read it exactly. Scout exposes this through `plures_task_create` in service mode.
+- The authenticated shared service exposes durable orchestration records: create/read tasks, PX-governed transitions, evidence, decision requests/resolutions, and task event trails. Scout exposes these in service mode through `plures_task_*` tools.
 - If no `dbPath` is configured, the capability registers **inert** (returns `{ manager: null, error }`) instead of crashing the host.
 
 ## Configuration
@@ -45,7 +45,7 @@ OpenClaw host
 The TypeScript layer is a thin IO boundary. It owns host/service adaptation and
 uses the native PluresDB store for governed writes, recall, vector indexing, and
 graph operations; it does not duplicate storage or search policy. The task
-creation contract and its initial `queued` lifecycle state are declared in
+lifecycle, evidence requirement, and decision-pause policy are declared in
 [`procedures/orchestration-task-lifecycle.px`](./procedures/orchestration-task-lifecycle.px),
 which the service loads into the native PX engine before admitting task writes.
 
@@ -72,8 +72,9 @@ published in the release artifact. Restart Scout after installation.
 ### Operational notes
 
 - **Exclusive lock.** A PluresDB store directory can be opened by only one handle per process. `PluresLmStore` memoizes one handle per `dbPath` (process-local singleton). Do not point two plugins at the same store path in one process.
-- **Service ownership.** With `serviceUrl`, Scout and OpenClaw are authenticated clients and do not open the shared store. The service owns both memory writes and task creation.
-- **Task creation is not task execution.** `POST /tasks` creates an auditable queued task. It does not silently invent a scheduler, worker, delegation policy, or state-transition API.
+- **Service ownership.** With `serviceUrl`, Scout and OpenClaw are authenticated clients and do not open the shared store. The service owns memory writes and all orchestration-record mutations.
+- **Reactive task kernel, not a hidden scheduler.** Tasks move through `queued`, `ready`, `in_progress`, `waiting_for_user`, `blocked`, and terminal states only when the PX admission contract permits it. Completion from `in_progress` requires a durable evidence record; a decision request parks work until a user answer releases it to `ready`.
+- **Still not task execution.** These APIs record and govern the work state, but do not silently invent a worker, agent lease, delegation policy, retry loop, or background dispatcher. Those require PluresDB conditional claims and a service-owned effect adapter.
 
 ## Build & test
 

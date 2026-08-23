@@ -12,6 +12,11 @@ It exposes PluresDB memory and Praxis entry points as MCP tools:
 - `plures_read`
 - `plures_sync`
 - `plures_task_create`
+- `plures_task_get`
+- `plures_task_events`
+- `plures_task_transition`
+- `plures_task_evidence`
+- `plures_task_decision_request`
 - `px_validate`
 - `px_compile`
 
@@ -32,9 +37,11 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 ```
 
 The service accepts unauthenticated `GET /health` only. Status, sync, recall,
-read, and durable task creation require `Authorization: Bearer <service-token>`.
-`plures_task_create` is service-mode-only: it creates one PX-declared queued
-`orch:task:` record and returns its id. It does not dispatch or execute the task.
+read, and durable orchestration records require `Authorization: Bearer <service-token>`.
+The `plures_task_*` tools are service-mode-only: they create/read PX-governed
+task state, record evidence, preserve an event trail, and park a task for
+a user decision. Decision resolution is intentionally left to a user-authorized
+channel outside Scout. They do not dispatch, lease, or execute the task.
 
 ## Explicit direct mode
 
@@ -76,6 +83,11 @@ Add a custom MCP server entry equivalent to:
       "plures_read",
       "plures_sync",
       "plures_task_create",
+      "plures_task_get",
+      "plures_task_events",
+      "plures_task_transition",
+      "plures_task_evidence",
+      "plures_task_decision_request",
       "px_validate",
       "px_compile"
     ]
