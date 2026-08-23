@@ -58,7 +58,7 @@
     "test:exact-id-lookup": "tsx test/exact-id-lookup.gate.mts"
   },
   "dependencies": {
-    "@plures/pluresdb-native": "file:../pluresdb/crates/pluresdb-node"
+    "@plures/pluresdb-native": "file:../praxis-platform/crates/pluresdb/crates/pluresdb-node"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -62,7 +62,7 @@ function ensureBinding(): string | null {
   } catch {
     /* ignore */
   }
-  cands.push(join("C:/Projects/pluresdb/crates/pluresdb-node", file));
+  cands.push(join("C:/Projects/praxis-platform/crates/pluresdb/crates/pluresdb-node", file));
   for (const c of cands) if (existsSync(c)) return c;
   return null;
 }

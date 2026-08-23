@@ -218,11 +218,11 @@ function nativeCrateRoots(): string[] {
   const roots = new Set<string>();
   const env = process.env.PLURESDB_NODE_DIR;
   if (env) roots.add(env);
-  // Walk up from this module looking for a sibling `pluresdb/crates/pluresdb-node`.
+  // Walk up from this module looking for the canonical Praxis Platform source tree.
   let here = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
   for (let i = 0; i < 8; i++) {
-    roots.add(join(here, "pluresdb", "crates", "pluresdb-node"));
-    roots.add(join(dirname(here), "pluresdb", "crates", "pluresdb-node"));
+    roots.add(join(here, "praxis-platform", "crates", "pluresdb", "crates", "pluresdb-node"));
+    roots.add(join(dirname(here), "praxis-platform", "crates", "pluresdb", "crates", "pluresdb-node"));
     const up = dirname(here);
     if (up === here) break;
     here = up;
@@ -258,7 +258,7 @@ function ensureNativeLibraryPath(): void {
     }
   }
   // Deterministic local-development fallback: the source crate sits next to the
-  // consuming repo under a sibling `pluresdb` checkout. Probe a few likely roots.
+  // consuming repo under a sibling Praxis Platform checkout. Probe a few likely roots.
   for (const root of nativeCrateRoots()) {
     candidates.push(join(root, file));
   }

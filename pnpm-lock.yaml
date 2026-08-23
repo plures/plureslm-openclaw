@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@plures/pluresdb-native':
-        specifier: file:../pluresdb/crates/pluresdb-node
-        version: file:../pluresdb/crates/pluresdb-node
+        specifier: file:../praxis-platform/crates/pluresdb/crates/pluresdb-node
+        version: file:../praxis-platform/crates/pluresdb/crates/pluresdb-node
     devDependencies:
       '@types/node':
         specifier: ^22.10.0
@@ -458,8 +458,8 @@ packages:
     peerDependencies:
       undici: '>=8.3.0 <9'
 
-  '@plures/pluresdb-native@file:../pluresdb/crates/pluresdb-node':
-    resolution: {directory: ../pluresdb/crates/pluresdb-node, type: directory}
+  '@plures/pluresdb-native@file:../praxis-platform/crates/pluresdb/crates/pluresdb-node':
+    resolution: {directory: ../praxis-platform/crates/pluresdb/crates/pluresdb-node, type: directory}
 
   '@protobufjs/aspromise@1.1.2':
     resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
@@ -2186,7 +2186,7 @@ snapshots:
     dependencies:
       undici: 8.3.0
 
-  '@plures/pluresdb-native@file:../pluresdb/crates/pluresdb-node': {}
+  '@plures/pluresdb-native@file:../praxis-platform/crates/pluresdb/crates/pluresdb-node': {}
 
   '@protobufjs/aspromise@1.1.2': {}
 
