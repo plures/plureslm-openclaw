@@ -31,6 +31,7 @@ Copy-Item -Force -LiteralPath (Join-Path $repoRoot "scripts\Stop-PluresLMScoutSe
 Copy-Item -Force -LiteralPath (Join-Path $repoRoot "scripts\Start-PluresLMScoutMcp.ps1") -Destination (Join-Path $stageRoot "scripts\Start-PluresLMScoutMcp.ps1")
 Copy-Item -Force -LiteralPath (Join-Path $repoRoot "scout-hooks\README.md") -Destination (Join-Path $stageRoot "README-Scout-Windows.md")
 Copy-Item -Force -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $stageRoot "LICENSE")
+Copy-Item -Force -LiteralPath (Join-Path $repoRoot "package.json") -Destination (Join-Path $stageRoot "package.json")
 
 $dist = Join-Path $repoRoot "dist"
 if (-not (Test-Path -LiteralPath (Join-Path $dist "service-cli.js"))) {
@@ -40,9 +41,19 @@ $nativeModule = Join-Path $repoRoot "node_modules\@plures\pluresdb-native"
 if (-not (Test-Path -LiteralPath $nativeModule)) {
     throw "node_modules\@plures\pluresdb-native does not exist. Run pnpm install before packaging a release."
 }
+$nativeAddonName = "pluresdb-node.win32-x64-msvc.node"
+$nativeAddon = if ($env:PLURESLM_NATIVE_ADDON_PATH) {
+    $env:PLURESLM_NATIVE_ADDON_PATH
+} else {
+    Join-Path $nativeModule $nativeAddonName
+}
+if (-not (Test-Path -LiteralPath $nativeAddon)) {
+    throw "Native PluresDB addon is missing: $nativeAddon. Build the Windows addon before packaging a release."
+}
 Copy-Item -Recurse -Force -LiteralPath $dist -Destination (Join-Path $stageRoot "dist")
 New-Item -ItemType Directory -Force -Path (Join-Path $stageRoot "node_modules\@plures") | Out-Null
 Copy-Item -Recurse -Force -LiteralPath $nativeModule -Destination (Join-Path $stageRoot "node_modules\@plures\pluresdb-native")
+Copy-Item -Force -LiteralPath $nativeAddon -Destination (Join-Path $stageRoot "node_modules\@plures\pluresdb-native\$nativeAddonName")
 
 @"
 pluresLM Scout Windows installer

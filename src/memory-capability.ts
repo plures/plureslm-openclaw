@@ -44,6 +44,7 @@
 
 import { createHash } from "node:crypto";
 import { type Dirent, readFileSync, readdirSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { basename, extname, join, relative } from "node:path";
 
 import type {
@@ -51,11 +52,6 @@ import type {
   MemoryPluginCapability,
   MemoryPluginRuntime,
   MemoryPromptSectionBuilder,
-} from "openclaw/plugin-sdk/memory-core";
-import {
-  DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR,
-  parseNonNegativeByteSize,
-  resolveCronStyleNow,
 } from "openclaw/plugin-sdk/memory-core";
 
 import { PluresLmStore, type PluresLmStoreOptions } from "./pluresdb.js";
@@ -104,6 +100,21 @@ const DEFAULT_FLUSH_PROMPT =
   "Summarize and persist durable memories from this session into memory/YYYY-MM-DD.md. Keep decisions, preferences, follow-ups, blockers, and high-signal context. Output NO_REPLY when complete.";
 const DEFAULT_FLUSH_SYSTEM_PROMPT =
   "You are a memory flush assistant. Persist durable, factual, privacy-safe memory notes. Do not include secrets. Output NO_REPLY when complete.";
+
+type OpenClawMemoryCore = {
+  DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR: number;
+  parseNonNegativeByteSize(value: unknown): number | null;
+  resolveCronStyleNow(
+    config: Record<string, unknown>,
+    nowMs: number,
+  ): { timeLine: string; userTimezone: string };
+};
+
+const requireOpenClaw = createRequire(import.meta.url);
+
+function loadOpenClawMemoryCore(): OpenClawMemoryCore {
+  return requireOpenClaw("openclaw/plugin-sdk/memory-core") as OpenClawMemoryCore;
+}
 
 function normalizeNonNegativeInt(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
@@ -169,6 +180,11 @@ const buildPromptSection: MemoryPromptSectionBuilder = ({
 };
 
 const buildMemoryFlushPlan: MemoryFlushPlanResolver = (params = {}) => {
+  const {
+    DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR,
+    parseNonNegativeByteSize,
+    resolveCronStyleNow,
+  } = loadOpenClawMemoryCore();
   const cfg = params.cfg;
   const defaults = cfg?.agents?.defaults?.compaction?.memoryFlush;
   if (defaults?.enabled === false) return null;
