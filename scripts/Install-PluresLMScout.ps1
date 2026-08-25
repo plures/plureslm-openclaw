@@ -64,10 +64,10 @@ foreach ($required in @("package.json", "dist\\service-cli.js", "node_modules\\@
 }
 
 New-Item -ItemType Directory -Force -Path $InstallRoot, $DataRoot, $DbPath | Out-Null
-$existingStopScript = Join-Path $InstallRoot "scripts\\Stop-PluresLMScoutService.ps1"
 $existingConfigPath = Join-Path $DataRoot "scout-service.json"
-if ((Test-Path -LiteralPath $existingStopScript) -and (Test-Path -LiteralPath $existingConfigPath)) {
-    & $existingStopScript -ConfigPath $existingConfigPath
+if (Test-Path -LiteralPath $existingConfigPath) {
+    $releaseStopScript = Join-Path $PackageRoot "scripts\\Stop-PluresLMScoutService.ps1"
+    & $releaseStopScript -ConfigPath $existingConfigPath
 }
 foreach ($directory in @("dist", "node_modules", "procedures", "scout-hooks", "scout-mcp", "scripts")) { Copy-ReleaseDirectory $directory }
 Copy-Item -LiteralPath (Join-Path $PackageRoot "package.json") -Destination (Join-Path $InstallRoot "package.json") -Force
