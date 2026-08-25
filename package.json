@@ -4,6 +4,7 @@
   "description": "PluresLM memory and durable-task capability for OpenClaw, backed by @plures/pluresdb-native.",
   "license": "AGPL-3.0-or-later",
   "type": "module",
+  "packageManager": "pnpm@9.0.0",
   "author": "Plures",
   "homepage": "https://github.com/plures/plureslm-openclaw",
   "repository": {
