@@ -6,6 +6,45 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+
+function Get-RuntimeDependencyNames {
+    param([string]$PackageDirectory)
+
+    $manifestPath = Join-Path $PackageDirectory "package.json"
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        throw "Runtime dependency package is missing package.json: $PackageDirectory"
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    foreach ($field in @("dependencies", "optionalDependencies")) {
+        $dependencies = $manifest.$field
+        if ($null -ne $dependencies) {
+            foreach ($property in $dependencies.PSObject.Properties) {
+                [string]$property.Name
+            }
+        }
+    }
+}
+
+function Copy-RuntimeDependency {
+    param([string]$DependencyName)
+
+    if (-not $copiedRuntimeDependencies.Add($DependencyName)) {
+        return
+    }
+    $source = Join-Path $repoRoot "node_modules\$DependencyName"
+    if (-not (Test-Path -LiteralPath $source)) {
+        throw "Runtime dependency '$DependencyName' is not installed. Run pnpm install before packaging a release."
+    }
+    $source = (Resolve-Path -LiteralPath $source).Path
+    $destination = Join-Path $runtimeModules $DependencyName
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+    Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
+
+    foreach ($transitiveDependency in Get-RuntimeDependencyNames $source) {
+        Copy-RuntimeDependency $transitiveDependency
+    }
+}
+
 if (-not $Version) {
     $packageJson = Get-Content -LiteralPath (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json
     $Version = [string]$packageJson.version
@@ -16,6 +55,8 @@ $packageName = "plureslm-scout-windows-$safeVersion"
 $stageRoot = Join-Path $OutputDir $packageName
 $zipPath = Join-Path $OutputDir "$packageName.zip"
 $shaPath = "$zipPath.sha256"
+$runtimeModules = Join-Path $stageRoot "node_modules"
+$copiedRuntimeDependencies = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 
 Remove-Item -Recurse -Force -LiteralPath $stageRoot -ErrorAction SilentlyContinue
 Remove-Item -Force -LiteralPath $zipPath, $shaPath -ErrorAction SilentlyContinue
@@ -51,9 +92,26 @@ if (-not (Test-Path -LiteralPath $nativeAddon)) {
     throw "Native PluresDB addon is missing: $nativeAddon. Build the Windows addon before packaging a release."
 }
 Copy-Item -Recurse -Force -LiteralPath $dist -Destination (Join-Path $stageRoot "dist")
-New-Item -ItemType Directory -Force -Path (Join-Path $stageRoot "node_modules\@plures") | Out-Null
-Copy-Item -Recurse -Force -LiteralPath $nativeModule -Destination (Join-Path $stageRoot "node_modules\@plures\pluresdb-native")
-Copy-Item -Force -LiteralPath $nativeAddon -Destination (Join-Path $stageRoot "node_modules\@plures\pluresdb-native\$nativeAddonName")
+New-Item -ItemType Directory -Force -Path $runtimeModules | Out-Null
+$runtimeManifest = Get-Content -LiteralPath (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json
+foreach ($dependency in $runtimeManifest.dependencies.PSObject.Properties) {
+    Copy-RuntimeDependency $dependency.Name
+}
+$stagedNativeModule = Join-Path $runtimeModules "@plures\pluresdb-native"
+Copy-Item -Force -LiteralPath $nativeAddon -Destination (Join-Path $stagedNativeModule $nativeAddonName)
+foreach ($requiredNativeFile in @("package.json", "index.js", $nativeAddonName)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $stagedNativeModule $requiredNativeFile))) {
+        throw "Packaged PluresDB runtime is missing $requiredNativeFile."
+    }
+}
+
+Push-Location $stageRoot
+try {
+    & node -e "const native = require('@plures/pluresdb-native'); if (typeof native.PluresDatabase !== 'function') { throw new Error('PluresDatabase export is unavailable'); }"
+    if ($LASTEXITCODE -ne 0) { throw "Packaged PluresDB runtime could not be loaded." }
+} finally {
+    Pop-Location
+}
 
 @"
 pluresLM Scout Windows installer
