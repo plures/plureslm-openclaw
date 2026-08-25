@@ -36,8 +36,14 @@ function Copy-ReleaseDirectory {
     $source = Join-Path $PackageRoot $Name
     $target = Join-Path $InstallRoot $Name
     if (-not (Test-Path -LiteralPath $source)) { throw "Release package is missing $Name." }
-    Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
-    Copy-Item -LiteralPath $source -Destination $target -Recurse -Force
+    if (Test-Path -LiteralPath $target) {
+        Remove-Item -LiteralPath $target -Recurse -Force
+        if (Test-Path -LiteralPath $target) { throw "Could not replace existing runtime directory $target." }
+    }
+    New-Item -ItemType Directory -Force -Path $target | Out-Null
+    Get-ChildItem -Force -LiteralPath $source | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $target $_.Name) -Recurse -Force
+    }
 }
 
 function New-ServiceToken {
@@ -51,15 +57,25 @@ if (-not $PackageRoot) { $PackageRoot = $PSScriptRoot }
 $PackageRoot = (Resolve-Path -LiteralPath $PackageRoot).Path
 if (-not $DbPath) { $DbPath = Join-Path $DataRoot "memory" }
 
-foreach ($required in @("package.json", "dist\\service-cli.js", "node_modules\\@plures\\pluresdb-native", "procedures\\orchestration-task-lifecycle.px", "scout-hooks", "scout-mcp", "scripts\\Start-PluresLMScoutService.ps1", "scripts\\Start-PluresLMScoutMcp.ps1", "scripts\\Stop-PluresLMScoutService.ps1")) {
+foreach ($required in @("package.json", "dist\\service-cli.js", "node_modules\\@plures\\pluresdb-native\\package.json", "node_modules\\@plures\\pluresdb-native\\index.js", "node_modules\\@plures\\pluresdb-native\\pluresdb-node.win32-x64-msvc.node", "procedures\\orchestration-task-lifecycle.px", "scout-hooks", "scout-mcp", "scripts\\Start-PluresLMScoutService.ps1", "scripts\\Start-PluresLMScoutMcp.ps1", "scripts\\Stop-PluresLMScoutService.ps1")) {
     if (-not (Test-Path -LiteralPath (Join-Path $PackageRoot $required))) {
         throw "Release package is missing $required. Download the complete Windows release zip."
     }
 }
 
 New-Item -ItemType Directory -Force -Path $InstallRoot, $DataRoot, $DbPath | Out-Null
+$existingConfigPath = Join-Path $DataRoot "scout-service.json"
+if (Test-Path -LiteralPath $existingConfigPath) {
+    $releaseStopScript = Join-Path $PackageRoot "scripts\\Stop-PluresLMScoutService.ps1"
+    & $releaseStopScript -ConfigPath $existingConfigPath
+}
 foreach ($directory in @("dist", "node_modules", "procedures", "scout-hooks", "scout-mcp", "scripts")) { Copy-ReleaseDirectory $directory }
 Copy-Item -LiteralPath (Join-Path $PackageRoot "package.json") -Destination (Join-Path $InstallRoot "package.json") -Force
+foreach ($required in @("node_modules\\@plures\\pluresdb-native\\package.json", "node_modules\\@plures\\pluresdb-native\\index.js", "node_modules\\@plures\\pluresdb-native\\pluresdb-node.win32-x64-msvc.node")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot $required))) {
+        throw "Installed runtime is missing $required."
+    }
+}
 
 $configPath = Join-Path $DataRoot "scout-service.json"
 $tokenPath = Join-Path $DataRoot "scout-service.token"

@@ -15,6 +15,9 @@ try {
     $dataRoot = Join-Path $runRoot "data"
     $copilotRoot = Join-Path $runRoot "copilot"
     $pluginRoot = Join-Path $copilotRoot "installed-plugins\\plures-local\\plureslm-scout-hooks"
+    $staleNative = Join-Path $installRoot "node_modules\\@plures\\pluresdb-native"
+    New-Item -ItemType Directory -Force -Path $staleNative | Out-Null
+    Set-Content -LiteralPath (Join-Path $staleNative "pluresdb-node.win32-x64-msvc.node") -Value "stale-native-addon" -Encoding ascii
     try {
         & (Join-Path $packageRoot "Install-PluresLMScout.ps1") -PackageRoot $packageRoot -InstallRoot $installRoot -DataRoot $dataRoot -DbPath (Join-Path $runRoot "memory") -PluginRoot $pluginRoot -CopilotRoot $copilotRoot -ServicePort $port -SkipScheduledTask
     } catch {
@@ -32,7 +35,17 @@ try {
     $config = Get-Content -LiteralPath (Join-Path $dataRoot "scout-service.json") -Raw | ConvertFrom-Json
     $hookEnv = Get-Content -LiteralPath (Join-Path $pluginRoot "plureslm-hook-env.json") -Raw | ConvertFrom-Json
     $mcp = Get-Content -LiteralPath (Join-Path $pluginRoot ".mcp.json") -Raw | ConvertFrom-Json
-    if (-not (Test-Path -LiteralPath (Join-Path $installRoot "node_modules\\@plures\\pluresdb-native\\pluresdb-node.win32-x64-msvc.node"))) { throw "Release install is missing the native PluresDB addon." }
+    $installedNative = Join-Path $installRoot "node_modules\\@plures\\pluresdb-native"
+    foreach ($requiredNativeFile in @("package.json", "index.js", "pluresdb-node.win32-x64-msvc.node")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $installedNative $requiredNativeFile))) { throw "Release install is missing $requiredNativeFile." }
+    }
+    Push-Location $installRoot
+    try {
+        & node -e "const native = require('@plures/pluresdb-native'); if (typeof native.PluresDatabase !== 'function') { throw new Error('PluresDatabase export is unavailable'); }"
+        if ($LASTEXITCODE -ne 0) { throw "Installed runtime could not resolve the bundled PluresDB package." }
+    } finally {
+        Pop-Location
+    }
     if ($hookEnv.PLURESLM_SCOUT_SERVICE_URL -ne $config.serviceUrl) { throw "Hook was not configured for the shared service." }
     if ($hookEnv.PSObject.Properties["PLURESLM_DB_PATH"]) { throw "Hook must not receive a direct store path in service mode." }
     if ($mcp.mcpServers.plureslm.args -notcontains "-ConfigPath") { throw "MCP was not configured through the authenticated service runner." }
