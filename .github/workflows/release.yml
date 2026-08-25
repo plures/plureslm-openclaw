@@ -73,4 +73,5 @@ jobs:
       bump: ${{ inputs.bump || '' }}
       target_version: ${{ inputs.target_version || '' }}
       skip_tests: true
+      publish_npm: false
     secrets: inherit
