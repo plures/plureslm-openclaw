@@ -22,9 +22,56 @@ permissions:
   packages: write
   id-token: write
 jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plureslm-openclaw
+    steps:
+      - name: Checkout PluresLM
+        uses: actions/checkout@v4
+        with:
+          path: plureslm-openclaw
+
+      - name: Checkout canonical PluresDB native dependency
+        uses: actions/checkout@v4
+        with:
+          repository: plures/praxis-platform
+          path: praxis-platform
+          token: ${{ secrets.PRAXIS_PLATFORM_TOKEN }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build PluresDB native addon
+        working-directory: praxis-platform/crates/pluresdb/crates/pluresdb-node
+        run: |
+          npm install
+          npm run build
+          addon="$GITHUB_WORKSPACE/praxis-platform/crates/pluresdb/crates/pluresdb-node/pluresdb-node.linux-x64-gnu.node"
+          test -f "$addon"
+          echo "PLURESLM_NATIVE_ADDON_PATH=$addon" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Validate release tests
+        run: |
+          pnpm run check
+          pnpm run build
+          pnpm test
+
   release:
+    needs: test
     uses: plures/.github/.github/workflows/release-reusable.yml@main
     with:
       bump: ${{ inputs.bump || '' }}
       target_version: ${{ inputs.target_version || '' }}
+      skip_tests: true
+      publish_npm: false
     secrets: inherit

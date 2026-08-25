@@ -1,4 +1,7 @@
 # pnpm workspace settings for plureslm-openclaw (single-package repo).
+packages:
+  - .
+
 #
 # verifyDepsBeforeRun=false: skip the implicit `pnpm install` status check that
 # pnpm runs before `pnpm run <script>`. That check exits non-zero solely because
