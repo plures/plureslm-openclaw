@@ -19,21 +19,21 @@ jobs:
 
     steps:
       - name: Checkout PluresLM
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: plureslm-openclaw
 
       - name: Checkout canonical PluresDB native dependency
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: plures/praxis-platform
           path: praxis-platform
-          token: ${{ secrets.PRAXIS_PLATFORM_TOKEN }}
+          token: ${{ secrets.PRAXIS_PLATFORM_TOKEN || github.token }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Build PluresDB native addon
         shell: pwsh
